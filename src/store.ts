@@ -1,11 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createRequire } from "node:module";
+import type { DatabaseSync } from "node:sqlite";
 
 // vitest 2.1.x 的 vite resolver 会把 "node:sqlite" 的前缀剥掉，导致 "Failed to load url sqlite"。
 // 用 createRequire 绕过 vite 转译；运行时无差别。
 const require = createRequire(import.meta.url);
-const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+const { DatabaseSync: DatabaseSyncCtor } = require("node:sqlite") as { DatabaseSync: new (path: string) => DatabaseSync };
 
 export type TaskStatus = "queued" | "running" | "needs_input" | "completed" | "failed" | "cancelled";
 export const TERMINAL_STATUSES: TaskStatus[] = ["completed", "failed", "cancelled"];
@@ -68,7 +69,7 @@ export class Store {
   private db: DatabaseSync;
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new DatabaseSync(dbPath);
+    this.db = new DatabaseSyncCtor(dbPath);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     this.db.exec(SCHEMA);
   }
@@ -123,13 +124,15 @@ export function openStore(dbPath: string): Store {
   return new Store(dbPath);
 }
 
-function buildUpdate(patch: TaskPatch, setExtra: string, whereExtra: string): [string, unknown[]] {
+function buildUpdate(patch: TaskPatch, setExtra: string, whereExtra: string): [string, (string | number | bigint | null)[]] {
   const sets: string[] = [];
-  const args: unknown[] = [];
+  const args: (string | number | bigint | null)[] = [];
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
     sets.push(`${k}=?`);
-    args.push(k === "files_changed" ? JSON.stringify(v) : k === "notify_failed" ? (v ? 1 : 0) : v);
+    if (k === "files_changed") args.push(JSON.stringify(v));
+    else if (k === "notify_failed") args.push(v ? 1 : 0);
+    else args.push(v as string | number | null);
   }
   if (setExtra) sets.push(setExtra);
   const where = whereExtra ? ` WHERE ${whereExtra}` : "";

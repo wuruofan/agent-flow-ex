@@ -12,6 +12,8 @@
 - `timeout_sec` 语义 = **每轮超时**：每个 runner 进程独立计时；needs_input 等人答复的墙钟时间不计入、不杀任务。`elapsed_sec` 仅作展示，从首次 `started_at` 起算（含等待）。
 - Phase 0 Spike 已于 2026-08-17 完成，结论见下方「Spike 事实」，实现须以事实为准。
 - 执行本 plan 的每个 commit 步骤前需向用户确认（用户规则：提交信息英文、提交前确认）。可按任务粒度批量确认。
+- **rounds 字段语义 = 当前轮号**（1-indexed，schema `DEFAULT 1`，server 续跑前 +1 后 spawn runner）。`>= MAX_ROUNDS`（=5）作为上限，等价于「最多 5 轮，第 5 轮是最后机会」。三层来源一致（schema / spec §3+§4.1 / plan line 1390 测试断言）。runner 拿到 task.rounds 时它就是正在跑的这一轮的轮号。
+- **runner `finalize` 的 transition `from` 收紧为 `["running"]`**（去除死分支 `"queued"`：claimToRunning 成功后状态必为 running，到 close handler 时不可能是 queued）。语义更精确，非功能改动。
 
 ---
 
