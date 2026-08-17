@@ -1,6 +1,6 @@
-# agent-flow 项目规格说明书 v2
+# agent-flow-ex 项目规格说明书 v2
 
-**项目名称**：`agent-flow`（原名 `cc-connect-flow` / `cc-flow`，2026-08-16 更名）
+**项目名称**：`agent-flow-ex`（原名 `cc-connect-flow` / `agent-flow`，2026-08-16 更名）
 **版本**：v2.0
 **状态**：设计完成，待评审
 **最后更新**：2026-08-16
@@ -61,7 +61,7 @@ Trae 运行强模型 = **架构师 / 技术负责人**；worker 运行较便宜�
 
 ```mermaid
 flowchart LR
-    Trae[Trae<br>架构师/强模型] -->|MCP stdio| S[agent-flow MCP server<br>无状态薄层]
+    Trae[Trae<br>架构师/强模型] -->|MCP stdio| S[agent-flow-ex MCP server<br>无状态薄层]
     S -->|submit: 写库 + spawn| R[runner × N<br>detached 进程]
     S -->|status/cancel: 读写| DB[(SQLite 任务库<br>单一真相源)]
     R -->|解析事件流| DB
@@ -82,7 +82,7 @@ flowchart LR
 
 ## 3. 任务库 Schema
 
-路径：`~/.agent-flow/tasks.db`，单表 `tasks`。
+路径：`~/.agent-flow-ex/tasks.db`，单表 `tasks`。
 
 | 字段 | 写入方 | 说明 |
 | :--- | :--- | :--- |
@@ -105,7 +105,7 @@ flowchart LR
 | `created_at` / `started_at` / `ended_at` | 双方 | elapsed_sec = started_at 起墙钟时间（含 needs_input 等待） |
 | `notify_failed` | runner | webhook 重试耗尽后置位，供补发 |
 
-存储策略：库存**结构化摘要**（喂给 Trae 上下文）；**原始事件流全量日志**落文件 `~/.agent-flow/logs/{task_id}.jsonl`，库只存路径。各轮答疑 prompt 追加写入日志文件，`prompt` 字段保持首轮原文。需要看全文时由 Trae 直接 Read 文件（零 MCP 成本）。
+存储策略：库存**结构化摘要**（喂给 Trae 上下文）；**原始事件流全量日志**落文件 `~/.agent-flow-ex/logs/{task_id}.jsonl`，库只存路径。各轮答疑 prompt 追加写入日志文件，`prompt` 字段保持首轮原文。需要看全文时由 Trae 直接 Read 文件（零 MCP 成本）。
 
 ---
 
@@ -207,7 +207,7 @@ runner 是 detached 进程，不存在用户的 shell 环境——zsh function�
 **两层环境来源**：
 
 1. **MCP 配置 env**（Trae 侧）：在 MCP 配置中声明基础环境变量（PATH 含 nvm node、keys），MCP server 与 runner 继承。
-2. **Config + Profile**（agent-flow 侧，权威）：`~/.agent-flow/config.json` 声明完整运行环境，runner spawn 时**显式构造**，不依赖任何 shell 继承。两维结构：`executors`（CLI 类型：bin/flags）× `profiles`（命名组合：executor 引用 + env + 模型）。
+2. **Config + Profile**（agent-flow-ex 侧，权威）：`~/.agent-flow-ex/config.json` 声明完整运行环境，runner spawn 时**显式构造**，不依赖任何 shell 继承。两维结构：`executors`（CLI 类型：bin/flags）× `profiles`（命名组合：executor 引用 + env + 模型）。
 
 ### 7.2 Executor 接口
 
@@ -397,8 +397,8 @@ CLI 能力以本地实证为准，不做假设：
 | 角色 | 归属 | 职责 |
 | :--- | :--- | :--- |
 | **plan** | Trae（调用方） | 方案设计、按需触发 work/review、最终把关 |
-| **worker** | agent-flow 内部 | 执行编码 |
-| **review** | agent-flow 内部（可选） | 审查 diff、打回返工 |
+| **worker** | agent-flow-ex 内部 | 执行编码 |
+| **review** | agent-flow-ex 内部（可选） | 审查 diff、打回返工 |
 
 plan 通过 `workflow` 参数决定任务链是否包含 review 环节。
 
