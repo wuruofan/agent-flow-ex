@@ -3,6 +3,10 @@
     "claude": {
       "bin": "/Users/meow/.nvm/versions/node/v24.18.0/bin/claude",
       "extra_flags": ["--dangerously-skip-permissions"]
+    },
+    "opencode": {
+      "bin": "opencode",
+      "extra_flags": ["--dangerously-skip-permissions"]
     }
   },
   "profiles": {
@@ -19,6 +23,21 @@
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "384000",
         "API_TIMEOUT_MS": "3000000"
       }
+    },
+    "ds-v4": {
+      "executor": "claude",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "<DEEPSEEK_API_KEY>",
+        "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash[1m]"
+      }
+    },
+    "opencode-minimax-3": {
+      "executor": "opencode",
+      "env": {}
     }
   },
   "notify": {
@@ -26,7 +45,7 @@
     "dry_run": true
   },
   "defaults": {
-    "profile": "minimax-3",
+    "profile": "opencode-minimax-3",
     "timeout_sec": 3600
   }
 }

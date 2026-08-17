@@ -1,0 +1,10 @@
+{"type":"step_start","timestamp":1772335636895,"sessionID":"ses_abc123","part":{"id":"prt_001","messageID":"msg_001","sessionID":"ses_abc123","type":"step-start"}}
+{"type":"reasoning","timestamp":1772335637000,"sessionID":"ses_abc123","part":{"id":"prt_002","sessionID":"ses_abc123","type":"reasoning","text":"thinking..."}}
+{"type":"text","timestamp":1772335637100,"sessionID":"ses_abc123","part":{"id":"prt_003","sessionID":"ses_abc123","type":"text","text":"Let me check the file."}}
+{"type":"tool_use","timestamp":1772335637200,"sessionID":"ses_abc123","part":{"id":"prt_004","sessionID":"ses_abc123","type":"tool","tool":"read","input":{"filePath":"/tmp/x.txt"}}}
+{"type":"text","timestamp":1772335637300,"sessionID":"ses_abc123","part":{"id":"prt_005","sessionID":"ses_abc123","type":"text","text":"all done"}}
+{"type":"step-finish","timestamp":1772335637400,"sessionID":"ses_abc123","part":{"id":"prt_006","sessionID":"ses_abc123","type":"step-finish","text":"all done"}}
+{"type":"error","timestamp":1772335637500,"sessionID":"ses_xyz","error":{"name":"APIError","data":{"message":"credit balance too low","statusCode":400,"isRetryable":false}}}
+{"type":"step_start","timestamp":1772335637600,"part":{"id":"prt_007","sessionID":"ses_alt","type":"step-start"}}
+{"type":"text","timestamp":1772335637700,"sessionID":"ses_alt","text":"plain text event without part wrapping"}
+not-json-line

@@ -14,9 +14,10 @@ export interface Executor {
 }
 
 import { claudeExecutor } from "./claude.js";
+import { opencodeExecutor } from "./opencode.js";
 import { fakeExecutor } from "./fake.js";
 
-const registry: Record<string, Executor> = { claude: claudeExecutor, fake: fakeExecutor };
+const registry: Record<string, Executor> = { claude: claudeExecutor, opencode: opencodeExecutor, fake: fakeExecutor };
 
 export function getExecutor(name: string): Executor {
   const ex = registry[name];

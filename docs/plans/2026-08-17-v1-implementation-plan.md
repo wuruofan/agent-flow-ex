@@ -14,6 +14,8 @@
 - 执行本 plan 的每个 commit 步骤前需向用户确认（用户规则：提交信息英文、提交前确认）。可按任务粒度批量确认。
 - **rounds 字段语义 = 当前轮号**（1-indexed，schema `DEFAULT 1`，server 续跑前 +1 后 spawn runner）。`>= MAX_ROUNDS`（=5）作为上限，等价于「最多 5 轮，第 5 轮是最后机会」。三层来源一致（schema / spec §3+§4.1 / plan line 1390 测试断言）。runner 拿到 task.rounds 时它就是正在跑的这一轮的轮号。
 - **runner `finalize` 的 transition `from` 收紧为 `["running"]`**（去除死分支 `"queued"`：claimToRunning 成功后状态必为 running，到 close handler 时不可能是 queued）。语义更精确，非功能改动。
+- **opencode executor 已落地（2026-08-18）**：实现基于官方文档与社区 cheatsheet 推断，未经真实事件样本验证。runner 不感知底层 executor。新增 `tests/executors-opencode.test.ts`（10 tests）、`tests/fixtures/opencode-events.jsonl`、`config.example.json` 加 `opencode-minimax-3` profile。
+ - 已知风险：opencode issue #31404 修复于 commit `0a7cb20`，v1.16.2 之前的版本 `text` 事件不 stream 到 stdout（仅 `step_start`），v1 不写 fallback，由用户版本号决定是否需要。
 
 ---
 
