@@ -1,0 +1,11 @@
+{"type":"system","subtype":"hook_started","session_id":"f34332fe-e7d5-4e48-ab6b-d8cfe2a2b889","hook_id":"h1","hook_name":"PreToolUse"}
+{"type":"system","subtype":"init","session_id":"f34332fe-e7d5-4e48-ab6b-d8cfe2a2b889"}
+{"type":"assistant","session_id":"f34332fe-e7d5-4e48-ab6b-d8cfe2a2b889","message":{"content":[{"type":"thinking","thinking":"...","signature":"x"}]}}
+{"type":"assistant","session_id":"f34332fe-e7d5-4e48-ab6b-d8cfe2a2b889","message":{"content":[{"type":"text","text":"pong"}]}}
+{"type":"assistant","session_id":"s2","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/private/tmp/spike-proj/hello.txt","content":"v1"}}]}}
+{"type":"assistant","session_id":"s2","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/private/tmp/spike-proj/hello.txt","old_string":"v1","new_string":"v1 v2","replace_all":false}}]}}
+{"type":"assistant","session_id":"s2","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat /private/tmp/spike-proj/hello.txt","description":"verify"}}]}}
+{"type":"user","session_id":"s2","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"v1 v2"}]}}
+{"type":"result","subtype":"success","session_id":"s2","result":"DONE","is_error":false,"total_cost_usd":0.001}
+{"type":"result","subtype":"error_during_execution","session_id":"s3","result":null,"is_error":true}
+not-json-line
