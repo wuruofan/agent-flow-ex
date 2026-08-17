@@ -8,6 +8,10 @@ describe("prompt contract", () => {
     expect(p).toContain(NEEDS_INPUT_MARKER);
     expect(p).toContain("执行工程师");
   });
+  it("initial prompt explicitly forbids AskUserQuestion (headless no control protocol)", () => {
+    const p = wrapInitialPrompt("任意任务");
+    expect(p).toMatch(/禁止.*AskUserQuestion|AskUserQuestion.*禁止/);
+  });
   it("wraps continue prompt with architect answer framing", () => {
     const p = wrapContinuePrompt("用 SQLite");
     expect(p).toContain("用 SQLite");
