@@ -1,0 +1,32 @@
+{
+  "executors": {
+    "claude": {
+      "bin": "/Users/meow/.nvm/versions/node/v24.18.0/bin/claude",
+      "extra_flags": ["--dangerously-skip-permissions"]
+    }
+  },
+  "profiles": {
+    "minimax-3": {
+      "executor": "claude",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "<MINIMAX_API_KEY>",
+        "ANTHROPIC_MODEL": "MiniMax-M3[1m]",
+        "ANTHROPIC_SMALL_FAST_MODEL": "MiniMax-M3[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M3[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "MiniMax-M3[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "MiniMax-M3[1m]",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "384000",
+        "API_TIMEOUT_MS": "3000000"
+      }
+    }
+  },
+  "notify": {
+    "feishu_webhook_url": "<FEISHU_WEBHOOK_URL>",
+    "dry_run": true
+  },
+  "defaults": {
+    "profile": "minimax-3",
+    "timeout_sec": 3600
+  }
+}
