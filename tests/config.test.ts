@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { agentFlowHome, dbPath, logsDir } from "../src/paths.js";
 import { loadConfig, resolveEnvPlaceholders } from "../src/config.js";
 
+// 用 process.execPath 作为 fixture bin：保证测试环境一定存在（validate 会做 existsSync 校验）。
 const validConfig = {
   executors: {
-    claude: { bin: "/usr/local/bin/claude", extra_flags: ["--dangerously-skip-permissions"] },
+    claude: { bin: process.execPath, extra_flags: ["--dangerously-skip-permissions"] },
   },
   profiles: {
     "minimax-3": {
@@ -59,6 +60,14 @@ describe("loadConfig", () => {
     bad.defaults.profile = "ghost";
     writeFileSync(join(home, "config.json"), JSON.stringify(bad));
     expect(() => loadConfig(home)).toThrow(/ghost/);
+    rmSync(home, { recursive: true, force: true });
+  });
+  it("rejects nonexistent executor bin (fail-fast over queued-and-stuck)", () => {
+    const home = mkdtempSync(join(tmpdir(), "afex-"));
+    const bad = structuredClone(validConfig);
+    bad.executors.claude.bin = "/nonexistent/path/to/claude";
+    writeFileSync(join(home, "config.json"), JSON.stringify(bad));
+    expect(() => loadConfig(home)).toThrow(/not found or not executable/);
     rmSync(home, { recursive: true, force: true });
   });
 });

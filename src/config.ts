@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentFlowHome, ensureRuntimeDirs } from "./paths.js";
 
@@ -47,6 +47,10 @@ export function loadConfig(home?: string): Config {
 function validate(cfg: Config): void {
   if (!cfg.executors || Object.keys(cfg.executors).length === 0) throw new Error("config.executors is empty");
   if (!cfg.profiles || Object.keys(cfg.profiles).length === 0) throw new Error("config.profiles is empty");
+  for (const [name, e] of Object.entries(cfg.executors)) {
+    if (!e.bin || typeof e.bin !== "string") throw new Error(`executor "${name}" missing "bin"`);
+    if (!binIsExecutable(e.bin)) throw new Error(`executor "${name}" bin "${e.bin}" not found or not executable`);
+  }
   for (const [name, p] of Object.entries(cfg.profiles)) {
     if (!cfg.executors[p.executor]) throw new Error(`profile "${name}" references unknown executor "${p.executor}"`);
   }
@@ -58,4 +62,20 @@ function validate(cfg: Config): void {
   if (!Number.isInteger(cfg.defaults.timeout_sec) || cfg.defaults.timeout_sec <= 0) {
     throw new Error("defaults.timeout_sec must be a positive integer");
   }
+}
+
+/**
+ * bin 解析策略：含分隔符（绝对或相对路径）就直接 existsSync + X_OK 检查；
+ * 裸命令则在 PATH 中查找（Node 无内置 PATH 解析，按 ":" 分隔实现）。
+ * 启动期失败比 spawn 时 ENOENT 留一堆卡 queued 任务强。
+ */
+function binIsExecutable(bin: string): boolean {
+  if (bin.includes("/")) {
+    try { accessSync(bin, constants.X_OK); return true; } catch { return false; }
+  }
+  const pathEnv = process.env.PATH ?? "";
+  for (const dir of pathEnv.split(":").filter(Boolean)) {
+    if (existsSync(join(dir, bin))) return true;
+  }
+  return false;
 }

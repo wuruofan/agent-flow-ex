@@ -15,7 +15,11 @@ import { dbPath } from "./paths.js";
 
 const MAX_ROUNDS = 5;
 const KILL_GRACE_MS = 3000;
+const NOTIFY_GRACE_MS = 1500; // SIGTERM 后给通知 promise 的最长等待时间
 const MAX_RESULT_LEN = 4000;
+
+/** 当前轮 finalize 启动的通知 promise；SIGTERM handler 等待它完成（防止被截断导致 notify_failed 未落库）。 */
+let pendingNotify: Promise<void> | null = null;
 
 async function main(): Promise<void> {
   const taskId = process.argv[2];
@@ -51,28 +55,36 @@ async function main(): Promise<void> {
   const log = createWriteStream(task.log_path, { flags: "a" });
 
   const args = executor.buildCommand(executorCfg.bin, executorCfg.extra_flags ?? [], task.session_id ?? undefined);
+  // 不设 detached：让 agent 继承 runner 的进程组（runner 自己是 leader），便于 cancel 时 kill(-runnerPid) 级联到 agent。
   const child: ChildProcess = spawn(executorCfg.bin, args, {
     cwd: task.project_path,
     env: buildAgentEnv(executorCfg.bin, profileEnv),
     stdio: ["pipe", "pipe", "pipe"],
-    detached: true,
   });
   log.write(JSON.stringify({ type: "_runner", event: "spawn", argv: args, round: task.rounds, child_pid: child.pid }) + "\n");
   child.stdin!.write(prompt);
   child.stdin!.end();
 
-  // cancel 场景：server kill(-runnerPid)。清掉 agent 后直接退出（server 已置 cancelled）。
+  // cancel 场景：server kill(-runnerPid)。agent 与 runner 同进程组，会随 runner 一起被 SIGTERM，无需单独再杀。
+  // 先等 final 通知最多 NOTIFY_GRACE_MS 完成再退出，避免截断导致 notify_failed 未标。
   process.on("SIGTERM", () => {
-    try { if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL"); } catch { /* already dead */ }
+    if (pendingNotify) {
+      Promise.race([
+        pendingNotify,
+        new Promise<void>((r) => setTimeout(r, NOTIFY_GRACE_MS)),
+      ]).catch(() => { /* finalize 已记日志 */ });
+    }
     process.exit(0);
   });
 
-  // 每轮超时：SIGTERM → 3s → SIGKILL
+  // 每轮超时：给整个进程组（runner 自己）发 SIGTERM → 3s 后 SIGKILL。
+  // 因为 runner 是进程组 leader（spawn-runner.ts 用 detached 启动），以 process.pid 为 pgid 即可，
+  // SIGTERM 会级联到 agent（即 child）。
   let timedOut = false;
   const timeoutTimer = setTimeout(() => {
     timedOut = true;
-    try { if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM"); } catch { /* already dead */ }
-    setTimeout(() => { try { if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL"); } catch { /* already dead */ } }, KILL_GRACE_MS).unref();
+    try { process.kill(-process.pid, "SIGTERM"); } catch { /* already dead */ }
+    setTimeout(() => { try { process.kill(-process.pid, "SIGKILL"); } catch { /* already dead */ } }, KILL_GRACE_MS).unref();
   }, task.timeout_sec * 1000);
   timeoutTimer.unref();
 
@@ -136,9 +148,11 @@ function finalize(
   const ok = store.transition(task.id, ["running"], to, { ...patch, ended_at: Math.floor(Date.now() / 1000) });
   if (!ok) { console.error(`terminal transition to ${to} lost race; task state changed elsewhere`); return; }
   const detail = to === "needs_input" ? String(patch.question ?? "") : to === "completed" ? trunc(String(patch.result ?? "")) : String(patch.error ?? "");
-  sendFeishuText(cfg.notify.feishu_webhook_url, notifyText(to, task.id, detail), { dryRun: cfg.notify.dry_run ?? true })
+  // 注册 pending 给 SIGTERM handler 等待；正常完成后清空，避免内存里挂旧 promise。
+  pendingNotify = sendFeishuText(cfg.notify.feishu_webhook_url, notifyText(to, task.id, detail), { dryRun: cfg.notify.dry_run ?? true })
     .then((sent) => { if (!sent) store.patch(task.id, { notify_failed: true }); })
-    .catch((e) => { console.error("[notifier] unexpected:", e); store.patch(task.id, { notify_failed: true }); });
+    .catch((e) => { console.error("[notifier] unexpected:", e); store.patch(task.id, { notify_failed: true }); })
+    .finally(() => { pendingNotify = null; });
 }
 
 function readRoundInput(logPath: string, round: number): string | null {

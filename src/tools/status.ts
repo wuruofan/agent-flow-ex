@@ -17,22 +17,6 @@ interface TaskView {
   notify_failed?: boolean;
 }
 
-/** 僵死检测（spec §5/§10）：running/queued 且 pid 不存活 → failed(interrupted)。EPERM 视为存活（进程存在但属他人）。 */
-function reapZombies(tasks: Task[], store: ReturnType<typeof openStore>): void {
-  for (const t of tasks) {
-    if ((t.status === "running" || t.status === "queued") && t.pid) {
-      let alive: boolean;
-      try { process.kill(t.pid, 0); alive = true; } catch (e: unknown) {
-        const code = (e as { code?: string } | null)?.code;
-        alive = code === "EPERM";
-      }
-      if (!alive) {
-        store.transition(t.id, ["running", "queued"], "failed", { error: "interrupted (runner process gone)", ended_at: Math.floor(Date.now() / 1000) });
-      }
-    }
-  }
-}
-
 function view(t: Task): TaskView {
   const now = Math.floor(Date.now() / 1000);
   return {
@@ -53,12 +37,9 @@ function view(t: Task): TaskView {
 export function status(args: StatusArgs): TaskView | TaskView[] | { error: string } {
   const store = openStore(dbPath());
   if (args.task_id) {
-    reapZombies(store.getTask(args.task_id) ? [store.getTask(args.task_id)!] : [], store);
     const t = store.getTask(args.task_id);
     if (!t) return { error: `task ${args.task_id} not found` };
     return view(t);
   }
-  const active = store.listActive();
-  reapZombies(active, store);
   return store.listActive().map(view);
 }

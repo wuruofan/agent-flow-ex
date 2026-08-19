@@ -16,7 +16,36 @@ export interface SubmitArgs {
 
 export type SubmitResult = { task_id: string; status: string; rounds: number } | { error: string };
 
-export function submit(args: SubmitArgs): SubmitResult {
+/**
+ * 等一小段时间（默认 80ms）让异步 spawn 错误浮现。
+ * - 同步异常（fs 校验等）通过 try/catch 直接处理。
+ * - 异步异常（ENOENT 等）在 child.on('error') 后触发 → onSpawnError 回调里把任务转 failed 并持有 msg。
+ *   submit 在 await 这个窗口之后检查 spawnErr，若存在则同步返回 error；否则声明启动成功。
+ *
+ * 设计取舍：80ms 是经验值——ENOENT 在本机通常 <50ms 完成；过短会漏掉、过久会让同步 submit 变慢。
+ */
+const SPAWN_ERROR_GRACE_MS = 80;
+
+function spawnRunnerWithAsyncErrorCapture(
+  id: string,
+  currentStatus: "queued" | "running",
+  store: ReturnType<typeof openStore>,
+): { pid: number | null; spawnError: Promise<string | null> } {
+  let errMsg: string | null = null;
+  const { child } = spawnDetachedRunner(id, (e) => {
+    errMsg = e.message;
+    store.transition(id, [currentStatus], "failed", {
+      error: `failed to spawn runner: ${e.message}`,
+      ended_at: Math.floor(Date.now() / 1000),
+    });
+  });
+  const spawnError = new Promise<string | null>((resolve) => {
+    setTimeout(() => resolve(errMsg), SPAWN_ERROR_GRACE_MS);
+  });
+  return { pid: child.pid ?? null, spawnError };
+}
+
+export async function submit(args: SubmitArgs): Promise<SubmitResult> {
   if (!args.prompt?.trim()) return { error: "prompt is required" };
   const cfg = loadConfig();
   const store = openStore(dbPath());
@@ -30,8 +59,10 @@ export function submit(args: SubmitArgs): SubmitResult {
     const ok = store.transition(args.continue_of, ["needs_input"], "running", { rounds });
     if (!ok) return { error: `task ${args.continue_of} state changed concurrently (now "${store.getTask(args.continue_of)?.status}")` };
     appendFileSync(t.log_path, JSON.stringify({ type: "user_prompt", round: rounds, text: args.prompt }) + "\n");
-    const child = spawnDetachedRunner(args.continue_of);
-    store.patch(args.continue_of, { pid: child.pid ?? null });
+    const { pid, spawnError } = spawnRunnerWithAsyncErrorCapture(args.continue_of, "running", store);
+    if (pid !== null) store.patch(args.continue_of, { pid });
+    const err = await spawnError;
+    if (err) return { error: `failed to spawn runner for ${args.continue_of}: ${err}` };
     return { task_id: args.continue_of, status: "running", rounds };
   }
 
@@ -57,7 +88,9 @@ export function submit(args: SubmitArgs): SubmitResult {
     timeout_sec, log_path: join(logsDir(), `${id}.jsonl`), role: "worker",
     created_at: Math.floor(Date.now() / 1000),
   });
-  const child = spawnDetachedRunner(id);
-  store.patch(id, { pid: child.pid ?? null });
+  const { pid, spawnError } = spawnRunnerWithAsyncErrorCapture(id, "queued", store);
+  if (pid !== null) store.patch(id, { pid });
+  const err = await spawnError;
+  if (err) return { error: `failed to spawn runner for ${id}: ${err}` };
   return { task_id: id, status: "queued", rounds: 1 };
 }

@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 // === Mock spawnDetachedRunner 避免真 spawn；断言调用参数 ===
 vi.mock("../src/spawn-runner.js", () => ({
-  spawnDetachedRunner: vi.fn((_taskId: string) => ({ pid: 99999, unref: () => {} })),
+  spawnDetachedRunner: vi.fn((_taskId: string) => ({
+    child: { pid: 99999, unref: () => {}, on: () => {} },
+  })),
   runnerCommand: () => ({ cmd: "ignored", args: (id: string) => [id] }),
 }));
 
@@ -33,35 +35,35 @@ beforeEach(() => {
 afterEach(() => { rmSync(home, { recursive: true, force: true }); delete process.env.AGENT_FLOW_HOME; });
 
 describe("submit", () => {
-  it("creates queued task with generated id and spawns runner (pid recorded)", () => {
-    const r = submit({ prompt: "hello", project_path: home });
+  it("creates queued task with generated id and spawns runner (pid recorded)", async () => {
+    const r = await submit({ prompt: "hello", project_path: home });
     expect(r).toMatchObject({ status: "queued", rounds: 1 });
     const id = (r as { task_id: string }).task_id;
     const t = openStore(join(home, "tasks.db")).getTask(id)!;
     expect(t.pid).toBe(99999);
     expect(t.log_path).toContain(join(home, "logs"));
     expect(mockedSpawn).toHaveBeenCalledTimes(1);
-    expect(mockedSpawn).toHaveBeenCalledWith(id);
+    expect(mockedSpawn).toHaveBeenCalledWith(id, expect.any(Function));
   });
-  it("rejects unknown profile", () => {
-    expect(submit({ prompt: "x", profile: "ghost", project_path: home })).toEqual({ error: 'unknown profile "ghost"' });
+  it("rejects unknown profile", async () => {
+    expect(await submit({ prompt: "x", profile: "ghost", project_path: home })).toEqual({ error: 'unknown profile "ghost"' });
   });
-  it("rejects bad project_path", () => {
-    expect(submit({ prompt: "x", project_path: "/no/such/dir/xx" })).toEqual({ error: 'project_path "/no/such/dir/xx" not accessible' });
+  it("rejects bad project_path", async () => {
+    expect(await submit({ prompt: "x", project_path: "/no/such/dir/xx" })).toEqual({ error: 'project_path "/no/such/dir/xx" not accessible' });
   });
-  it("rejects empty prompt", () => {
-    expect(submit({ prompt: "  ", project_path: home })).toEqual({ error: "prompt is required" });
+  it("rejects empty prompt", async () => {
+    expect(await submit({ prompt: "  ", project_path: home })).toEqual({ error: "prompt is required" });
   });
-  it("rejects bad timeout_sec", () => {
-    expect(submit({ prompt: "x", project_path: home, timeout_sec: -1 })).toEqual({ error: "timeout_sec must be a positive integer" });
-    expect(submit({ prompt: "x", project_path: home, timeout_sec: 1.5 })).toEqual({ error: "timeout_sec must be a positive integer" });
+  it("rejects bad timeout_sec", async () => {
+    expect(await submit({ prompt: "x", project_path: home, timeout_sec: -1 })).toEqual({ error: "timeout_sec must be a positive integer" });
+    expect(await submit({ prompt: "x", project_path: home, timeout_sec: 1.5 })).toEqual({ error: "timeout_sec must be a positive integer" });
   });
-  it("continue_of rejects non-needs_input task", () => {
-    const r = submit({ prompt: "x", project_path: home });
+  it("continue_of rejects non-needs_input task", async () => {
+    const r = await submit({ prompt: "x", project_path: home });
     const id = (r as { task_id: string }).task_id;
-    expect(submit({ prompt: "answer", continue_of: id })).toEqual({ error: `task ${id} is "queued", expected "needs_input"` });
+    expect(await submit({ prompt: "answer", continue_of: id })).toEqual({ error: `task ${id} is "queued", expected "needs_input"` });
   });
-  it("continue_of returns same task_id with rounds+1", () => {
+  it("continue_of returns same task_id with rounds+1", async () => {
     const store = openStore(join(home, "tasks.db"));
     const id = "task_x";
     store.createTask({
@@ -70,10 +72,22 @@ describe("submit", () => {
       created_at: Math.floor(Date.now() / 1000),
     });
     store.transition(id, ["queued"], "needs_input", { question: "q" });
-    const r = submit({ prompt: "answer", continue_of: id });
+    const r = await submit({ prompt: "answer", continue_of: id });
     expect(r).toEqual({ task_id: id, status: "running", rounds: 2 });
     expect(store.getTask(id)?.rounds).toBe(2);
     expect(store.getTask(id)?.status).toBe("running");
+  });
+  it("returns error and marks task failed when async spawn fails (P1-3)", async () => {
+    // 让 mock 模拟"spawn 失败"：onSpawnError 立即被调用，传错信息
+    mockedSpawn.mockImplementationOnce((_id: string, onSpawnError?: (e: Error) => void) => {
+      onSpawnError?.(new Error("ENOENT: runner script gone"));
+      return { child: { pid: null, unref: () => {}, on: () => {} } };
+    });
+    const r = await submit({ prompt: "hello", project_path: home });
+    expect(r).toMatchObject({ error: expect.stringMatching(/failed to spawn runner/) });
+    // 任务已经 transition 到 failed，不在活跃列表
+    const store = openStore(join(home, "tasks.db"));
+    expect(store.listActive().length).toBe(0);
   });
 });
 
