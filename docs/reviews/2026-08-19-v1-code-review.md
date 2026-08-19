@@ -6,6 +6,12 @@
 > 测试状态：53 例全绿 ✅
 > 目标：供 claude minimax m3 改正；附本机集成测试 gap 分析
 
+## 修复状态（追加于评审当日）
+
+✅ 已修复：P0-1、P0-2、P1-3、P1-5（均经 vitest 53/53 + `tsc --noEmit` 验证）
+⏳ 未修复（保留观察）：P1-4、P1-6、P1-7、P1-8、P2-9、P2-10、集成测试 gap
+详见各条目下方的"修复记录"小节。
+
 ---
 
 ## 评审方法
@@ -44,6 +50,8 @@ function reapZombies(tasks: Task[], store: ReturnType<typeof openStore>): void {
 - **方案 A（推荐）**：去掉 `reapZombies`。runner 自己负责终态（`SIGTERM` handler + 超时机制），不需要外部清理。daemon 模型下 runner 消失，该机制本就失效。
 - 方案 B：加进程名/命令行校验（`ps -p <pid> -o comm=`），但跨平台复杂，属于补丁。
 
+> **修复记录（2026-08-19）** — 采用方案 A：`src/tools/status.ts` 删除 `reapZombies` 函数与两处调用。runner 的 SIGTERM handler + 超时机制足够覆盖正常清理；runner 异常崩溃的僵死任务会随进程组整体消失，留给上层守护或人工干预。
+
 ---
 
 ### 2. `cancel.ts:17` — 信号组杀可能误杀无关进程
@@ -63,6 +71,8 @@ try { process.kill(-t.pid, "SIGTERM"); } catch { /* runner 可能刚退出，继
 - 在 `cancel` 中，如果 `kill(-runnerPid)` 成功，等一个短暂 grace period（如 500ms）再检查 agent 是否还在，必要时直接 `kill(-agentPid)`。
 - 或者：runner spawn agent 时不设 `detached: true`，让 agent 继承 runner 的进程组，这样 `kill(-runnerPid)` 能级联杀死 agent。
 
+> **修复记录（2026-08-19）** — 采用"方案 b"：`src/runner.ts` 去掉 agent 的 `detached: true`，让 agent 继承 runner 的进程组（runner 自己由 `spawn-runner.ts` 用 `detached: true` 启动，是进程组 leader）。`kill(-runnerPid)` 现可级联杀 agent；超时路径也相应改为 `kill(-process.pid, ...)`。runner SIGTERM handler 不再单独二次杀 agent（因同进程组会被一并终止）。
+
 ---
 
 ## 🟠 P1 — 设计/可维护性问题
@@ -78,6 +88,8 @@ store.patch(id, { pid: child.pid ?? null });
 **问题**：如果 `spawnDetachedRunner` 抛异常（如 tsx 未安装、runner 脚本不存在），任务已 `createTask` 但 runner 没起来，任务永远卡在 `queued`，无超时机制清理。
 
 **建议**：`spawnDetachedRunner` 的异常应被捕获，任务 transition 到 `failed`，并记录错误原因。
+
+> **修复记录（2026-08-19）** — `src/tools/submit.ts` 在两处 `spawnDetachedRunner` 调用（新任务路径 / 续跑路径）外层加 try/catch：失败时把任务 transition 到 `failed`，错误信息落库，同时给调用方返回 `{error}`。
 
 ---
 
@@ -112,6 +124,8 @@ sendFeishuText(...)
 **问题**：`finalize` 是同步函数，通知异步执行。`SIGTERM` handler (`runner.ts:65-68`) 直接 `process.exit(0)`，如果通知恰好在 pending，会被截断，导致 `notify_failed` 未标记。
 
 **建议**：`SIGTERM` handler 里先清 timeout，给一个短暂 grace period（如 500ms）让 pending promise 完成，再退出。或明确接受"通知可能丢失"的语义并在文档中说明。
+
+> **修复记录（2026-08-19）** — `src/runner.ts` 把 finalize 启动的通知 promise 赋给模块级 `pendingNotify`；SIGTERM handler 用 `Promise.race` 等 `pendingNotify` 完成，最长 1500ms（`NOTIFY_GRACE_MS`）。`pendingNotify` 在 `.finally` 中清空，避免旧引用滞留。
 
 ---
 
@@ -231,13 +245,14 @@ PATH: [dirname(bin), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
 
 ## 建议修复优先级
 
-1. **P0-1**：去掉 `reapZombies`（或加进程名校验）
-2. **P0-2**：`cancel` 的进程组杀级联问题（runner-agent 进程组关系）
-3. **P1-3**：`submit` 的 spawn 异常捕获
-4. **P1-5**：`finalize` 通知被 `SIGTERM` 截断
-5. **P1-6**：`buildUpdate` 列名白名单
-6. **P1-7**：`agent-env.ts` PATH 追加 `process.env.PATH`
-7. **集成测试**：写 `fake-agent.mjs` + `integration.test.ts`
+1. ✅ **P0-1**：去掉 `reapZombies`（已修，见各条目修复记录）
+2. ✅ **P0-2**：`cancel` 的进程组杀级联问题（已修，方案 b）
+3. ✅ **P1-3**：`submit` 的 spawn 异常捕获（已修）
+4. ✅ **P1-5**：`finalize` 通知被 `SIGTERM` 截断（已修）
+5. ⏳ **P1-6**：`buildUpdate` 列名白名单（加固；当前 patch 来源全部静态，风险低）
+6. ⏳ **P1-7**：`agent-env.ts` PATH 追加 `process.env.PATH`（涉及 spec §7.1 "显式构造"决策，慎改）
+7. ⏳ **P1-8**：`config.ts` validate 校验 bin 可执行（启动失败快速失败，建议修）
+8. ⏳ **集成测试**：写 `fake-agent.mjs` + `integration.test.ts`（范围大，单独排期）
 
 ---
 
