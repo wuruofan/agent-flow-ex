@@ -71,7 +71,9 @@ try { process.kill(-t.pid, "SIGTERM"); } catch { /* runner 可能刚退出，继
 - 在 `cancel` 中，如果 `kill(-runnerPid)` 成功，等一个短暂 grace period（如 500ms）再检查 agent 是否还在，必要时直接 `kill(-agentPid)`。
 - 或者：runner spawn agent 时不设 `detached: true`，让 agent 继承 runner 的进程组，这样 `kill(-runnerPid)` 能级联杀死 agent。
 
-> **修复记录（2026-08-19）** — 采用"方案 b"：`src/runner.ts` 去掉 agent 的 `detached: true`，让 agent 继承 runner 的进程组（runner 自己由 `spawn-runner.ts` 用 `detached: true` 启动，是进程组 leader）。`kill(-runnerPid)` 现可级联杀 agent；超时路径也相应改为 `kill(-process.pid, ...)`。runner SIGTERM handler 不再单独二次杀 agent（因同进程组会被一并终止）。
+> **修复记录（2026-08-19）** — 采用"方案 b"：`src/runner.ts` 去掉 agent 的 `detached: true`，让 agent 继承 runner 的进程组（runner 自己由 `spawn-runner.ts` 用 `detached: true` 启动，是进程组 leader）。`kill(-runnerPid)` 现可级联杀 agent；runner SIGTERM handler 不再单独二次杀 agent（因同进程组会被一并终止）。
+>
+> **follow-up（2026-08-19）** — 集成测试发现：超时路径最初也用 `kill(-process.pid, ...)`，会同时杀掉 runner 自己导致 SIGTERM handler 抢先 exit 跳过 `child.on('close')` 处理，任务卡 `running`。已修正为 `kill(child.pid, ...)`——只杀 agent，等其 close 事件触发 finalize 走 timedOut 分支。该 follow-up 由集成测试覆盖（`tests/integration.test.ts` 中 `timeout kills long-running agent`）。
 
 ---
 
