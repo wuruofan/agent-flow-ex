@@ -77,14 +77,14 @@ async function main(): Promise<void> {
     process.exit(0);
   });
 
-  // 每轮超时：给整个进程组（runner 自己）发 SIGTERM → 3s 后 SIGKILL。
-  // 因为 runner 是进程组 leader（spawn-runner.ts 用 detached 启动），以 process.pid 为 pgid 即可，
-  // SIGTERM 会级联到 agent（即 child）。
+  // 每轮超时：给 agent 发 SIGTERM → 3s 后 SIGKILL。agent 退出后 child.close 触发，
+  // finalize 走 timedOut 分支并标 failed（task 转 failed + pendingNotify 落库）。
+  // 注意：避免 kill(-process.pid) 给整个进程组——那会让 runner 自己 SIGTERM 跳过 child.close 处理。
   let timedOut = false;
   const timeoutTimer = setTimeout(() => {
     timedOut = true;
-    try { process.kill(-process.pid, "SIGTERM"); } catch { /* already dead */ }
-    setTimeout(() => { try { process.kill(-process.pid, "SIGKILL"); } catch { /* already dead */ } }, KILL_GRACE_MS).unref();
+    try { if (child.pid !== undefined) process.kill(child.pid, "SIGTERM"); } catch { /* already dead */ }
+    setTimeout(() => { try { if (child.pid !== undefined) process.kill(child.pid, "SIGKILL"); } catch { /* already dead */ } }, KILL_GRACE_MS).unref();
   }, task.timeout_sec * 1000);
   timeoutTimer.unref();
 
