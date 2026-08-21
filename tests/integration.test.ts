@@ -160,3 +160,35 @@ describe("integration: needs_input → continue → completed", () => {
     expect(t.result).toContain("all done");
   }, 20_000);
 });
+
+describe("integration: concurrent submits", () => {
+  // 并发安全：N 个任务同时提交到同一 home（共享 tasks.db），全部应各自进入终态、互不串扰。
+  // SQLite WAL 模式保证 transition 原子性；本测试主要验证：
+  //   1) 没有 task_id 重复 / 数据库错误
+  //   2) 每个任务都到 completed（状态机不冲突）
+  //   3) 日志文件按 task_id 隔离（不互踩）
+  it("N parallel submits → all completed; no DB conflicts (concurrent regression)", async () => {
+    const N = 4;
+    const t0 = Date.now();
+    const rs = await Promise.all(
+      Array.from({ length: N }, (_, i) => submit({ prompt: `parallel-${i}`, project_path: home })),
+    );
+    const ids = rs.map((r) => (r as { task_id: string }).task_id);
+    // task_id 互不重复
+    expect(new Set(ids).size).toBe(N);
+    // 全部进入终态（completed）。并发的 runner 各自 spawn fake-agent，互不冲突。
+    await Promise.all(ids.map((id) => waitForTerminal(id, 15_000).then((s) => {
+      expect({ id, s }).toEqual({ id, s: "completed" });
+    })));
+    // 每个 task 的 result 都填了，且 logs/ 下都有对应 jsonl
+    const db = join(home, "tasks.db");
+    for (const id of ids) {
+      const t = openStore(db).getTask(id) as { status: string; result?: string };
+      expect(t.status).toBe("completed");
+      expect(t.result).toContain("all done");
+      expect(existsSync(join(home, "logs", `${id}.jsonl`))).toBe(true);
+    }
+    // 端到端执行时间 sanity check：4 个任务并发跑（fake-agent 每轮 <200ms），整轮 < 8s
+    expect(Date.now() - t0).toBeLessThan(8_000);
+  }, 20_000);
+});
