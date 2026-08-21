@@ -195,53 +195,60 @@ PATH: [dirname(bin), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
 
 ## 本机集成测试 Gap 分析
 
-当前测试状态：53 例单元测试全绿，但**无集成测试**。下面是本机跑通集成测试还缺的步骤。
+> 状态更新（2026-08-19）：v1 review 当日已落入 `tests/integration.test.ts`，覆盖正文列出的前 5 类（完整生命周期、续跑、超时、cancel 级联、并发）+ P0-2 / P1-3 / P1-5 / P1-8 等修复的回归网。当前 5/5 通过，60/60 全量测试通过；fake-agent.mjs 共享 fixture 暂未扩展，集成测试用 inline fixture（chmod +x 内联脚本）替代——见下。
 
 ### 已具备 ✅
 
 - [x] `fakeExecutor` 存在（`src/executors/fake.ts`），复用 claude 事件解析
-- [x] `fake-agent.mjs` 脚本存在（`tests/fixtures/fake-agent.mjs`），支持 `FAKE_MODE=ok|needs_input|fail|hang`
 - [x] 测试框架 vitest 已配置
 - [x] SQLite 内存/临时文件测试基础设施（`store.test.ts` 已用 `mkdtempSync`）
+- [x] 集成测试文件 `tests/integration.test.ts` 已存在，覆盖 happy / cancel / timeout / continue / concurrent 五个用例
 
-### 还缺 ❌
+### 解决 ✅
 
-#### 1. `fake-agent.mjs` 已具备，需扩展模式 ✅→⚠️
+#### 1. `fake-agent.mjs` 模式补充 ✅→⚠️ 部分解决
 
-`tests/fixtures/fake-agent.mjs` 已存在，支持 `FAKE_MODE=ok|needs_input|fail|hang`，输出 claude 格式 `stream-json` 事件。但集成测试需要更多模式：
-- [ ] `--resume` 参数支持（当前脚本不读 argv，至少不报错）
-- [ ] 多轮续跑模式（round 2 输出不同内容，验证 `readRoundInput`）
-- [ ] 工具调用 + 文件变更验证模式
-- [ ] 慢速输出模式（逐行延迟 emit，验证流式事件解析）
+`tests/fixtures/fake-agent.mjs` 保留（FAKE_MODE=ok|needs_input|fail|hang）作为契约级 fixture。集成测试**不依赖共享 fixture**，改用每个 `setupHome()` 写一份**inline chmod +x 的 fake-agent.cjs**：
 
-当前 `tests/tools.test.ts` mock 了 `spawnDetachedRunner`，集成测试需去掉 mock、真实 spawn。
+- 行为由 `FAKE_MODE` 环境变量决定（与共享 fixture 同名同语义）
+- 通过 `FAKE_PIDFILE` 选项让 cancel 测试验证 agent pid 实际死亡
+- `--resume` / 多轮 / 工具调用 / 慢速输出这些模式的扩展不在本轮范围内——谁要用谁来加
 
-#### 2. 集成测试文件
+为什么不修共享 `fake-agent.mjs`：
+- 它已声明不读 argv / 不感知 resume，是 v1 早期 fixture
+- 集成测试 inline 方案更 hermetic（每个 it 用独立 home + agent，互不串扰）
+- 改共享 fixture 改 8+ 处使用点，影响面远大于本会话目标
 
-建议新建 `tests/integration.test.ts`，覆盖：
-- [ ] **完整任务生命周期**：`submit` → runner spawn → fake agent 执行 → `completed`/`needs_input` → `status` 查询 → `cancel`
-- [ ] **续跑闭环**：`needs_input` → `submit(continue_of)` → runner 续跑 → `completed`
-- [ ] **超时处理**：fake agent sleep 超过 `timeout_sec` → runner 杀进程 → `failed`
-- [ ] **cancel 级联**：`cancel` 杀 runner → runner handler 杀 agent → 无孤儿进程
-- [ ] **通知链路**：dry_run=false 时真实发 webhook（可用 httpbin/local server 拦截）
-- [ ] **并发安全**：多个任务同时 submit，状态机不冲突
+#### 2. 集成测试文件 ✅
 
-#### 3. 测试环境配置
+`tests/integration.test.ts` 已实现：
 
-- [ ] `config.json` 的 `fake` profile 指向本机 `node` + `fake-agent.mjs`
-- [ ] `AGENT_FLOW_HOME` 指向临时目录（避免污染真实数据）
-- [ ] 飞书 webhook URL 指向本地 mock server（如 `npx http-echo-server`）
+- [x] 完整任务生命周期（submit → runner → fake-agent → completed）
+- [x] cancel 级联（submit hang → cancel → agent pid 死亡）— **P0-2 回归网**
+- [x] 超时处理（fake-agent hang > timeout_sec → failed(timeout)）— **P1 timeout 回归网**
+- [x] 续跑闭环（needs_input → submit(continue_of) → completed）
+- [x] 并发安全（N=4 并行 submit，全部 completed，无 DB 冲突，< 8s 完成）
+- [ ] 通知链路（dry_run=false 真实发 webhook）— 未覆盖；现用 dry_run=true 跳过
 
-#### 4. 进程清理保障
+#### 3. 测试环境配置 ✅（部分解决）
 
-集成测试 spawn 的真实进程必须在 `afterEach`/`afterAll` 中清理，避免测试跑完后残留 runner/agent 进程。建议：
-- 测试用固定 `AGENT_FLOW_HOME`，`afterAll` 扫 `tasks.db` 中 `running` 任务并 `kill(-pid)`
-- 或用 `process.on('exit')` 钩子做兜底清理
+- [x] 内联 inline fake-agent.cjs + profile.env.PATH 注入（避开 `node` shebang 找不到）
+- [x] `AGENT_FLOW_HOME` 每次 `mkdtempSync("/tmp/afex-int-*")`
+- [ ] 飞书 webhook URL 指向本地 mock server（未实现）
 
-#### 5. CI/本地运行一致性
+> 注：集成测试用 `/tmp` 而非 `os.tmpdir()`——macOS 在 `/var/folders/.../T` 下 spawn 可执行 `.cjs` 报 ENOEXEC（Quarantine 属性 / 内核 EXEC 权限边界）。在 `tests/integration.test.ts` 顶部注释解释了这一点。
 
-- [ ] `package.json` 加 `test:integration` script
-- [ ] 文档说明集成测试依赖（Node >=22.5、tsx、sqlite 实验性警告可忽略）
+#### 4. 进程清理保障 ✅
+
+- `beforeEach` mkdtemp + `mkdirSync logs`
+- `afterEach` `rmSync(home, { recursive: true, force: true })` —— 包含 SQLite db + log 文件
+- agent 进程在 cancel 测试里**主动断言死亡**（`process.kill(agentPid, 0)`）；超时测试里 SIGTERM 路径下 fake-agent `process.exit(0)` 主动响应
+- 不需 `process.on('exit')` 兜底：所有 agent 路径都通过 child.on('close') 显式收尾
+
+#### 5. CI/本地运行一致性 ✅（部分解决）
+
+- [x] `package.json` 加 `"test:integration": "vitest run tests/integration.test.ts"`（与 `test` 区分）
+- [ ] 文档说明集成测试依赖（Node >=22.5、tsx、sqlite 实验性警告可忽略）— 未单独写；本 review doc 顶部已述
 
 ---
 
