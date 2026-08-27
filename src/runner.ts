@@ -6,11 +6,11 @@ import { appendFileSync, createWriteStream, readFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { openStore, type Task, type TaskPatch } from "./store.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveEnvPlaceholders } from "./config.js";
 import { getExecutor } from "./executors/types.js";
 import { buildAgentEnv } from "./agent-env.js";
 import { wrapInitialPrompt, wrapContinuePrompt, extractNeedsInput } from "./prompt.js";
-import { sendFeishuText, notifyText } from "./notifier.js";
+import { sendFeishuCard, buildFeishuCard } from "./notifier.js";
 import { dbPath } from "./paths.js";
 
 const MAX_ROUNDS = 5;
@@ -149,7 +149,12 @@ function finalize(
   if (!ok) { console.error(`terminal transition to ${to} lost race; task state changed elsewhere`); return; }
   const detail = to === "needs_input" ? String(patch.question ?? "") : to === "completed" ? trunc(String(patch.result ?? "")) : String(patch.error ?? "");
   // 注册 pending 给 SIGTERM handler 等待；正常完成后清空，避免内存里挂旧 promise。
-  pendingNotify = sendFeishuText(cfg.notify.feishu_webhook_url, notifyText(to, task.id, detail), { dryRun: cfg.notify.dry_run ?? true })
+  // feishu_webhook_url 支持 {env:VAR} 占位符；dry_run 时不解析（打日志即可），真实发送才解析，
+  // 缺变量时抛错 → notify_failed（任务状态不受影响）。
+  const dryRun = cfg.notify.dry_run ?? true;
+  const webhook = dryRun ? cfg.notify.feishu_webhook_url
+    : resolveEnvPlaceholders({ url: cfg.notify.feishu_webhook_url }).url;
+  pendingNotify = sendFeishuCard(webhook, buildFeishuCard(to, task.id, detail, cfg.notify.keyword), { dryRun })
     .then((sent) => { if (!sent) store.patch(task.id, { notify_failed: true }); })
     .catch((e) => { console.error("[notifier] unexpected:", e); store.patch(task.id, { notify_failed: true }); })
     .finally(() => { pendingNotify = null; });
