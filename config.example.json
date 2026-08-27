@@ -14,7 +14,7 @@
       "executor": "claude",
       "env": {
         "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "<MINIMAX_API_KEY>",
+        "ANTHROPIC_AUTH_TOKEN": "{env:MINIMAX_API_KEY}",
         "ANTHROPIC_MODEL": "MiniMax-M3[1m]",
         "ANTHROPIC_SMALL_FAST_MODEL": "MiniMax-M3[1m]",
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "MiniMax-M3[1m]",
@@ -28,7 +28,7 @@
       "executor": "claude",
       "env": {
         "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": "<DEEPSEEK_API_KEY>",
+        "ANTHROPIC_AUTH_TOKEN": "{env:DEEPSEEK_API_KEY}",
         "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
@@ -41,8 +41,9 @@
     }
   },
   "notify": {
-    "feishu_webhook_url": "<FEISHU_WEBHOOK_URL>",
-    "dry_run": true
+    "feishu_webhook_url": "{env:FEISHU_WEBHOOK_URL}",
+    "dry_run": true,
+    "keyword": "agent-flow-ex"
   },
   "defaults": {
     "profile": "opencode-minimax-3",

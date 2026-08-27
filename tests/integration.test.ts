@@ -11,8 +11,20 @@
 // - FAKE_MODE & FAKE_PIDFILE 通过 profile.env 传到 agent 子进程。
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// 集成测试直接跑预编译的 dist/runner.js（生产同款路径），避开 tsx 冷启动给每个 runner 进程加的延迟——
+// 否则本机 spawn 延迟会把测试内部 timing 阈值（waitForTerminal 8s / pidfile 4s / 并发 8s）拖爆而误报失败。
+// dist 缺失时整组优雅 skip，避免 `npm test` 因未构建而红；`npm run test:integration` 会先 build。
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const builtRunner = join(repoRoot, "dist", "runner.js");
+const builtRunnerExists = existsSync(builtRunner);
+if (!builtRunnerExists) {
+  console.warn(`[integration] SKIP: ${builtRunner} not found. Run \`npm run build\` first.`);
+}
+const suite = builtRunnerExists ? describe : describe.skip;
 
 import { submit } from "../src/tools/submit.js";
 import { status } from "../src/tools/status.js";
@@ -65,6 +77,7 @@ function setupHome(extraProfileEnv: Record<string, string> = {}, timeoutSec = 30
 beforeEach(() => {
   home = mkdtempSync("/tmp/afex-int-");
   process.env.AGENT_FLOW_HOME = home;
+  process.env.AGENT_FLOW_RUNNER = builtRunner;
   mkdirSync(join(home, "logs"), { recursive: true });
   setupHome();
 });
@@ -72,6 +85,7 @@ beforeEach(() => {
 afterEach(() => {
   if (existsSync(home)) rmSync(home, { recursive: true, force: true });
   delete process.env.AGENT_FLOW_HOME;
+  delete process.env.AGENT_FLOW_RUNNER;
 });
 
 async function waitForTerminal(id: string, timeoutMs = 8_000): Promise<string> {
@@ -96,7 +110,7 @@ async function waitForPidfile(path: string, timeoutMs = 4_000): Promise<number> 
   throw new Error(`timeout waiting pidfile: ${path}`);
 }
 
-describe("integration: full task lifecycle", () => {
+suite("integration: full task lifecycle", () => {
   it("submit → runner → fake-agent (ok) → completed", async () => {
     const r = await submit({ prompt: "hello", project_path: home });
     expect(r).toMatchObject({ status: "queued", rounds: 1 });
@@ -107,7 +121,7 @@ describe("integration: full task lifecycle", () => {
   }, 10_000);
 });
 
-describe("integration: cancel cascades to agent process", () => {
+suite("integration: cancel cascades to agent process", () => {
   it("cancel kills the agent; no orphans (P0-2 regression)", async () => {
     const pidfile = join(home, "agent.pid");
     setupHome({ FAKE_MODE: "hang", FAKE_PIDFILE: pidfile });
@@ -130,7 +144,7 @@ describe("integration: cancel cascades to agent process", () => {
   }, 10_000);
 });
 
-describe("integration: timeout kills long-running agent", () => {
+suite("integration: timeout kills long-running agent", () => {
   it("hang mode > timeout_sec → failed(timeout) (P1 timeout regression)", async () => {
     setupHome({ FAKE_MODE: "hang" }, 2); // timeout_sec=2
     const r = await submit({ prompt: "hang slow", project_path: home });
@@ -141,7 +155,7 @@ describe("integration: timeout kills long-running agent", () => {
   }, 12_000);
 });
 
-describe("integration: needs_input → continue → completed", () => {
+suite("integration: needs_input → continue → completed", () => {
   it("first round needs_input; submit(continue_of) re-spawns runner; second round completed", async () => {
     // 第一轮
     setupHome({ FAKE_MODE: "needs_input" });
@@ -161,7 +175,7 @@ describe("integration: needs_input → continue → completed", () => {
   }, 20_000);
 });
 
-describe("integration: concurrent submits", () => {
+suite("integration: concurrent submits", () => {
   // 并发安全：N 个任务同时提交到同一 home（共享 tasks.db），全部应各自进入终态、互不串扰。
   // SQLite WAL 模式保证 transition 原子性；本测试主要验证：
   //   1) 没有 task_id 重复 / 数据库错误

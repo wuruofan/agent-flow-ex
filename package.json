@@ -13,9 +13,11 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "pretest:integration": "npm run build",
     "test:integration": "vitest run tests/integration.test.ts",
     "server": "tsx src/server.ts",
-    "runner": "tsx src/runner.ts"
+    "runner": "tsx src/runner.ts",
+    "init": "tsx src/init.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

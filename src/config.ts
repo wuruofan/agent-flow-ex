@@ -13,21 +13,21 @@ export interface ProfileConfig {
 export interface Config {
   executors: Record<string, ExecutorConfig>;
   profiles: Record<string, ProfileConfig>;
-  notify: { feishu_webhook_url: string; dry_run?: boolean };
+  notify: { feishu_webhook_url: string; dry_run?: boolean; keyword?: string };
   defaults: { profile: string; timeout_sec: number };
 }
 
 /**
- * 将 "<VAR_NAME>" 占位符替换为运行时环境变量；缺失则抛错（避免明文密钥落盘）。
+ * 将 "{env:VAR_NAME}" 占位符替换为运行时环境变量；缺失则抛错（避免明文密钥落盘）。
  * 真实写法与 spec 草稿略有不同——见 plan §Task 2 Step 3 末尾的修正指引。
  */
 export function resolveEnvPlaceholders(env: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
-    const m = /^<([A-Z0-9_]+)>$/.exec(v);
+    const m = /^\{env:([A-Z0-9_]+)\}$/.exec(v);
     if (m) {
       const val = process.env[m[1]];
-      if (!val) throw new Error(`env placeholder <${m[1]}> not found in process environment`);
+      if (!val) throw new Error(`env placeholder {env:${m[1]}} not found in process environment`);
       out[k] = val;
     } else {
       out[k] = v;
@@ -65,17 +65,25 @@ function validate(cfg: Config): void {
 }
 
 /**
- * bin 解析策略：含分隔符（绝对或相对路径）就直接 existsSync + X_OK 检查；
- * 裸命令则在 PATH 中查找（Node 无内置 PATH 解析，按 ":" 分隔实现）。
- * 启动期失败比 spawn 时 ENOENT 留一堆卡 queued 任务强。
+ * 把 bin 解析成绝对路径：
+ * - 含分隔符（绝对/相对路径）→ 直接校验 existence + X_OK；
+ * - 裸命令名 → 按 PATH 查找（Node 无内置 PATH 解析，按 ":" 分隔实现）。
+ * 返回 null 表示找不到。validate() 与 buildAgentEnv() 共用，保证
+ * 「启动期校验」与「运行时 PATH」一致（否则裸名能在校验期通过、运行时 ENOENT）。
  */
-function binIsExecutable(bin: string): boolean {
+export function resolveBinPath(bin: string): string | null {
   if (bin.includes("/")) {
-    try { accessSync(bin, constants.X_OK); return true; } catch { return false; }
+    try { accessSync(bin, constants.X_OK); return bin; } catch { return null; }
   }
   const pathEnv = process.env.PATH ?? "";
   for (const dir of pathEnv.split(":").filter(Boolean)) {
-    if (existsSync(join(dir, bin))) return true;
+    const p = join(dir, bin);
+    if (existsSync(p)) return p;
   }
-  return false;
+  return null;
+}
+
+/** 校验 bin 是否可解析且可执行：直接复用 resolveBinPath。 */
+function binIsExecutable(bin: string): boolean {
+  return resolveBinPath(bin) !== null;
 }

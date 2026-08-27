@@ -1,0 +1,265 @@
+# agent-flow-ex
+
+把 AI 编程 Agent（Claude Code / OpenCode）当作「后台任务」来调度的 **MCP Server**。
+
+通过 MCP 工具 `submit` / `status` / `cancel` 提交任务：server 以 detached 子进程拉起**真实** agent CLI，用 SQLite 记录任务状态机，支持 `NEEDS_INPUT` 续跑、超时、取消，并在任务结束时推送飞书通知。
+
+## 特性
+
+- **后台调度**：任务在独立 detached 进程里跑，不阻塞你的对话；随时 `status` 查进度、`cancel` 终止。
+- **状态机**：`queued → running → (needs_input → running → …) → completed | failed | cancelled`，最多 5 轮续跑。
+- **多 Agent / 多 Provider**：内置 `claude` 与 `opencode` 两个 executor，可配置不同 profile（如 MiniMax、DeepSeek 网关）。
+- **NEEDS_INPUT 续跑**：agent 反问时任务进入 `needs_input`，用 `submit(continue_of=…)` 把答案喂回去继续跑。
+- **飞书通知**：任务终态（完成 / 失败 / 取消）推送飞书，支持 `dry_run` 调试。
+- **密钥零落盘（config）**：`config.json` 只含 `{env:ENV_VAR}` 占位符；真实密钥落在 `$AGENT_FLOW_HOME/.env`（chmod 600，server 启动自动加载），不进 git、不被同步。
+
+## 架构
+
+```
+MCP Client (TRAE 等)
+   │  stdio: submit / status / cancel
+   ▼
+server.ts (MCP Server)
+   │  submit → 写 SQLite → spawn detached runner
+   ▼
+runner.ts (detached 子进程)
+   │  buildCommand → spawn agent CLI (claude -p / opencode)
+   │  逐行解析 agent 事件 → 落库 + 写日志
+   ▼
+agent CLI (真实 claude / opencode) ── 事件流 ──▶ 终态 + 飞书通知
+```
+
+## 要求
+
+- Node.js **>= 22.5**
+- 本地已安装要用的 agent CLI（`claude` 或 `opencode`）
+
+## 安装
+
+```bash
+git clone <repo> && cd agent-flow-ex
+npm install
+npm run build        # tsc → 生成 dist/
+```
+
+## 配置
+
+### 配置目录
+
+配置放在 `AGENT_FLOW_HOME` 指向的目录下，文件名 `config.json`：
+
+```bash
+export AGENT_FLOW_HOME="$HOME/.agent-flow-ex"   # 缺省即此；也可指向任意目录
+```
+
+### config.json 结构
+
+参考 `config.example.json`，字段如下：
+
+```jsonc
+{
+  "executors": {
+    "claude":   { "bin": "/abs/path/to/claude", "extra_flags": ["--dangerously-skip-permissions"] },
+    "opencode": { "bin": "/abs/path/to/opencode", "extra_flags": ["--dangerously-skip-permissions"] }
+  },
+  "profiles": {
+    "minimax-3": {
+      "executor": "claude",
+      "env": {
+        "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": "{env:MINIMAX_API_KEY}",
+        "ANTHROPIC_MODEL": "MiniMax-M3[1m]"
+        // …其余 ANTHROPIC_* / CLAUDE_CODE_* 变量
+      }
+    }
+  },
+  "notify": {
+    "feishu_webhook_url": "{env:FEISHU_WEBHOOK_URL}",
+    "dry_run": true
+  },
+  "defaults": { "profile": "minimax-3", "timeout_sec": 3600 }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `executors.<name>.bin` | agent CLI 的**绝对路径**（见下方「重要」）。 |
+| `executors.<name>.extra_flags` | 拼到 agent 命令后的额外参数（如 `--resume` 之外的权限开关）。 |
+| `profiles.<name>.executor` | 引用 `executors` 里的某个 executor。 |
+| `profiles.<name>.env` | 传给 agent 子进程的环境变量；支持 `{env:VAR}` 占位符（见下）。 |
+| `notify.feishu_webhook_url` | 飞书机器人 webhook；支持 `{env:FEISHU_WEBHOOK_URL}` 占位符。 |
+| `notify.dry_run` | `true`（缺省）→ 只打印通知内容不真发；`false` → 真发。 |
+| `defaults.profile` | `submit` 不指定 profile 时用的默认 profile（必须在 `profiles` 中存在）。 |
+| `defaults.timeout_sec` | 单轮超时（秒），超时 SIGTERM 杀掉 agent。 |
+
+### `executors.<name>.bin`：绝对路径或裸命令名皆可
+
+`runner` 拉起 agent 时，会显式构造子进程环境，其 `PATH` 以 **`dirname(解析后的 bin)` + 系统目录** 组成（`src/agent-env.ts`）。`bin` 支持两种写法：
+
+- **裸命令名** `"claude"`：运行时按 `process.env.PATH` 解析成绝对路径（与启动期 `validate()` 行为一致），`dirname` 取解析结果目录。最省事，推荐。
+- **绝对路径** `/abs/path/claude`：直接用，适合多版本 / 非标准安装。
+
+想确认 claude 会被解析到哪：
+
+```bash
+which claude        # → /Users/you/.nvm/versions/node/v24.18.0/bin/claude
+which opencode      # → /usr/local/bin/opencode
+```
+
+> 早期版本要求必须写绝对路径；现已支持裸名自动解析，无需再硬编码 nvm 路径。
+
+### 密钥：config 占位符 + `.env` 真实值
+
+`env` 与 `feishu_webhook_url` 里写成 `"{env:VAR_NAME}"` 形式的值，会在**任务运行时**（runner 进程）从环境变量替换。**config.json 永远不写真实密钥**，真实值放在 `$AGENT_FLOW_HOME/.env`：
+
+```bash
+# $AGENT_FLOW_HOME/.env（示例；init 命令会自动生成，chmod 600）
+MINIMAX_API_KEY=sk-xxxx
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+```
+
+- **server 启动时自动加载 `.env`** 灌进 `process.env`（`src/env-file.ts`；只补缺失，不覆盖真实环境变量），runner 是 server 的 detached 子进程，自动继承——所以**密钥不用写进 MCP 注册的 `env` 字段**。
+- 占位符在运行时缺失 → 加载/解析直接报错（避免明文密钥意外落盘）。
+- 想让 `.env` 生效，重启 server 进程即可。
+
+### 飞书 dry_run
+
+调试期把 `notify.dry_run` 设为 `true`（也是缺省值），通知内容只打到 stderr，不会真正 POST。确认链路无误后再改为 `false`。
+
+## 运行
+
+### 作为 MCP Server（stdio）
+
+把 server 注册进支持 MCP 的客户端（如 TRAE）。生产用预编译入口：
+
+```jsonc
+{
+  "command": "node",
+  "args": ["/abs/path/agent-flow-ex/dist/server.js"],
+  "env": {
+    "AGENT_FLOW_HOME": "/abs/path/to/your/home"
+    // 密钥不用放这里：server 启动时会自动读 $AGENT_FLOW_HOME/.env
+  }
+}
+```
+
+开发模式（直接跑 TS，无需先 build）：
+
+```bash
+npm run server      # = tsx src/server.js
+```
+
+### 手动跑单条任务（调试用）
+
+`runner` 一般被 server 自动 spawn。需手动验证时，先确保 SQLite 里已有一条任务记录（通常由 `submit` 创建），再：
+
+```bash
+npm run runner <task_id>     # = tsx src/runner.ts <task_id>
+```
+
+### 跑测试
+
+```bash
+npm run build && npm test            # 单元 + 集成 = 75 全绿
+npm run test:integration            # 只跑集成（会自动先 build）
+npm run typecheck                   # 仅类型检查
+```
+
+集成测试直接跑预编译的 `dist/runner.js`（与生产同款），避免 dev 路径下 tsx 冷启动拖慢 timing 断言。
+
+## MCP 工具
+
+### `submit`
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `prompt` | ✅ | 任务描述 / 指令。 |
+| `project_path` | | agent 的工作目录，缺省为 server 进程 cwd。 |
+| `profile` | | 用哪个 profile，缺省 `defaults.profile`。 |
+| `continue_of` | | 填已有 `needs_input` 任务 id，把 `prompt` 作为该轮回答续跑。 |
+| `timeout_sec` | | 单轮超时，缺省 `defaults.timeout_sec`。 |
+
+返回 `{ task_id, status, rounds }` 或 `{ error }`。
+
+### `status`
+
+| 参数 | 说明 |
+|---|---|
+| `task_id` | 不填则返回所有活跃任务；填了返回单条。 |
+
+返回字段含 `status / rounds / profile / elapsed_sec / progress / files_changed`，终态时含 `result` / `error`，`needs_input` 时含 `question`，通知失败时含 `notify_failed`。
+
+### `cancel`
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `task_id` | ✅ | 取消指定任务。 |
+
+对终态任务幂等（返回当前状态，不改写）；对 `running` 任务会 SIGTERM 级联杀掉 agent 进程。
+
+## 状态机
+
+```
+        submit
+          │
+          ▼
+       queued ──spawn──▶ running ──agent 反问──▶ needs_input
+          │                  │                        │
+          │                  │ answered (submit continue_of)
+          │                  │                        │
+          │                  ▼                        ▼
+          │               running ◀──────────────────┘   (最多 5 轮)
+          │                  │
+          ├──────────────────┤
+          ▼                  ▼
+     completed           failed
+          │
+          ▼
+   cancelled (任意非终态可取消)
+```
+
+`needs_input` 续跑示例：
+
+1. `submit({ prompt: "给项目加登录页", profile: "minimax-3" })` → 拿到 `task_id`。
+2. `status({ task_id })` 看到 `status: "needs_input"`、`question: "用哪种数据库？"`。
+3. `submit({ continue_of: task_id, prompt: "PostgreSQL" })` → 继续跑。
+
+## 排错
+
+- **`executor "claude" bin "…" not found or not executable`**：`bin` 路径不对或没 `+x`，改绝对路径。
+- **任务 `failed`，`error: failed to spawn runner: … ENOENT`**：`bin` 用了裸名导致子进程 PATH 找不到 agent，改绝对路径（见上「重要」）。
+- **飞书不推送**：检查 `dry_run` 是否还是 `true`；检查 `.env` 里 `FEISHU_WEBHOOK_URL` 是否存在（或 server 进程环境是否已 `export`）。
+- **`{env:VAR}` 报错 `not found in process environment`**：对应密钥不在 `.env` 里，也没 `export` 到 server 进程环境。加到 `$AGENT_FLOW_HOME/.env` 后重启 server。
+
+## 快速初始化（`init` 命令）
+
+不想手拼 JSON？用交互式 `init` 自动探测 CLI 路径、收集密钥，并生成 `config.json` + `.env`：
+
+```bash
+npm run init                 # 开发模式（tsx）
+# 或生产形态：
+node dist/server.js init    # 即 `agent-flow-ex init`
+```
+
+交互流程（claude executor 为例）：
+
+1. 用哪个 agent CLI（`claude` / `opencode`，自动探测并提示检测到的路径）；bin 用检测到的绝对路径（回车即采用）；
+2. profile 名（默认 `default`）；
+3. provider 预设（`minimax` / `deepseek` / `custom`）：
+   - **预设**：内置 base_url + 默认模型 + 对应密钥变量名（`MINIMAX_API_KEY` / `DEEPSEEK_API_KEY`）。检测到该环境变量时**掩码展示**（`sk-…wXYZ`）并问 `Use this value? [Y/n]`——`Enter`/`Y` 直接采用；`n` 后粘贴新值，或 `Enter` 跳过。
+   - **custom**：只问 `ANTHROPIC_BASE_URL` 与模型名；密钥**只粘贴**（无标准变量名可检测），占位符变量名从 profile 名派生（如 `myprov` → `MYPROV_API_KEY`）。
+4. 飞书 webhook：检测到 `FEISHU_WEBHOOK_URL` 同样 `[Y/n]` 确认，否则粘贴或跳过（仍生成占位符 + `dry_run`）；
+5. 默认超时秒数。
+
+结束后：
+
+- 写 `config.json`（**只含 `{env:VAR}` 占位符**，零明文）并自动用 `loadConfig()` 自校验；
+- 把确认/粘贴到的密钥写进 `$AGENT_FLOW_HOME/.env`（**chmod 600**，幂等——同值不重写）；
+- 若密钥最终没进 `.env`，会打印 ⚠ 提醒「运行时必须有该变量，否则任务失败」；
+- 末尾提示可编辑 `config.json` 调整模型别名与通用默认 env（如 `API_TIMEOUT_MS`）。
+
+> 已有 `config.json` 时 `init` 会先确认是否覆盖。opencode executor 不询问 provider——它由 opencode 自己的配置管理（`opencode auth login` / `opencode.json`），agent-flow 只负责拉起。
+
+## 后续（planned）
+
+- v2 daemon（设计文档见 `docs/designs/2026-08-18-session-adapter.md`，代码未启动）。

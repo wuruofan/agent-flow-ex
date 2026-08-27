@@ -5,10 +5,13 @@ import { submit } from "./tools/submit.js";
 import { status } from "./tools/status.js";
 import { cancel } from "./tools/cancel.js";
 import { ensureRuntimeDirs } from "./paths.js";
+import { loadEnvFile } from "./env-file.js";
 
 const json = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v, null, 2) }] });
 
 async function main(): Promise<void> {
+  // 先灌 $AGENT_FLOW_HOME/.env（真实密钥所在）→ runner 子进程自动继承，任务期占位符可解析。
+  loadEnvFile();
   ensureRuntimeDirs();
   const server = new McpServer({ name: "agent-flow-ex", version: "0.1.0" });
 
@@ -28,7 +31,7 @@ async function main(): Promise<void> {
       continue_of: z.string().optional().describe("续跑目标任务 id（该任务须为 needs_input）"),
       timeout_sec: z.number().int().positive().optional().describe("每轮超时秒数，默认取 config"),
     },
-    async (args) => json(submit(args))
+    async (args) => json(await submit(args))
   );
 
   server.tool(
@@ -49,4 +52,13 @@ async function main(): Promise<void> {
   console.error("[agent-flow-ex] mcp server ready (stdio)");
 }
 
-main().catch((e) => { console.error("[agent-flow-ex] fatal:", e); process.exit(1); });
+const sub = process.argv[2];
+if (sub === "init") {
+  // 交互式 onboarding：探测 CLI、生成 config.json。动态 import 避免正常 MCP 启动拉入 readline。
+  const { runInit } = await import("./init.js");
+  runInit()
+    .then(() => process.exit(0))
+    .catch((e) => { console.error("[agent-flow-ex] init failed:", e); process.exit(1); });
+} else {
+  main().catch((e) => { console.error("[agent-flow-ex] fatal:", e); process.exit(1); });
+}

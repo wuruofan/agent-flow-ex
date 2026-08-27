@@ -3,9 +3,13 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 
-/** prod（编译后 dist/server.js）spawn dist/runner.js；dev/test（tsx 跑 src/*.ts）spawn src/runner.ts via --import tsx。 */
+/** prod（编译后 dist/server.js）spawn dist/runner.js；dev/test（tsx 跑 src/*.ts）spawn src/runner.ts via --import tsx。
+ *  AGENT_FLOW_RUNNER 允许覆盖 runner 脚本路径（测试指向预编译 dist/runner.js，避开 tsx 冷启动延迟）。值为脚本路径，统一用 node 拉起。 */
 export function runnerCommand(): { cmd: string; args: (id: string) => string[] } {
-  if (process.env.AGENT_FLOW_RUNNER) return { cmd: process.env.AGENT_FLOW_RUNNER, args: (id) => [id] };
+  if (process.env.AGENT_FLOW_RUNNER) {
+    const runnerBin = process.env.AGENT_FLOW_RUNNER;
+    return { cmd: process.execPath, args: (id) => [runnerBin, id] };
+  }
   const selfUrl = import.meta.url;
   const ext = selfUrl.endsWith(".ts") ? "ts" : "js";
   const runnerPath = join(fileURLToPath(new URL(".", selfUrl)), `runner.${ext}`);

@@ -13,7 +13,7 @@ const validConfig = {
   profiles: {
     "minimax-3": {
       executor: "claude",
-      env: { ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic", ANTHROPIC_AUTH_TOKEN: "<MINIMAX_API_KEY>" },
+      env: { ANTHROPIC_BASE_URL: "https://api.minimaxi.com/anthropic", ANTHROPIC_AUTH_TOKEN: "{env:MINIMAX_API_KEY}" },
     },
   },
   notify: { feishu_webhook_url: "https://open.feishu.cn/hook/x", dry_run: true },
@@ -73,13 +73,13 @@ describe("loadConfig", () => {
 });
 
 describe("resolveEnvPlaceholders", () => {
-  it("resolves <VAR> placeholders from process.env", () => {
+  it("resolves {env:VAR} placeholders from process.env", () => {
     process.env.MINIMAX_API_KEY = "sk-test";
-    expect(resolveEnvPlaceholders({ A: "<MINIMAX_API_KEY>", B: "literal" })).toEqual({ A: "sk-test", B: "literal" });
+    expect(resolveEnvPlaceholders({ A: "{env:MINIMAX_API_KEY}", B: "literal" })).toEqual({ A: "sk-test", B: "literal" });
     delete process.env.MINIMAX_API_KEY;
   });
   it("throws on missing placeholder env", () => {
     delete process.env.NO_SUCH_KEY_XYZ;
-    expect(() => resolveEnvPlaceholders({ A: "<NO_SUCH_KEY_XYZ>" })).toThrow(/NO_SUCH_KEY_XYZ/);
+    expect(() => resolveEnvPlaceholders({ A: "{env:NO_SUCH_KEY_XYZ}" })).toThrow(/NO_SUCH_KEY_XYZ/);
   });
 });
