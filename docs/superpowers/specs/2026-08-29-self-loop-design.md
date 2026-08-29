@@ -74,7 +74,7 @@ worker 终态 ─> 飞书卡片 ─> 用户 ─> 回到 IDE ─> 告诉我 ─> 
 
 | 派发方 | 触发机制 | 触发粒度 | 进程内 MCP 可见性 | 上下文维持 | 状态持久化 | 备注 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **WorkBuddy automation** | `automation_update` + RRULE / `scheduledAt` | 分钟级（RRULE 粒度下限待测） | **已验证**：初始工具列表**不可见**，须 `ToolSearch` 加载后 `DeferExecuteTool` 调用（见 §4.1 步骤 0） | 每次触发新会话；平台另提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆（v1 不用） | store 即外部记忆 | **v1 首选**（2026-08-29 21:20 端到端实测通过） |
+| **WorkBuddy automation** | `automation_update` + RRULE / `scheduledAt` | **1 小时**（实测：`MINUTELY` 不支持，仅 DAILY/HOURLY/WEEKLY/MONTHLY/YEARLY；`BYMINUTE` 被静默忽略） | **已验证**：初始工具列表**不可见**，须 `ToolSearch` 加载后 `DeferExecuteTool` 调用（见 §4.1 步骤 0） | 每次触发新会话；平台另提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆（v1 不用） | store 即外部记忆 | **v1 首选**（2026-08-29 21:20 端到端实测通过） |
 | **Trae IDE hooks** | hooks 框架（trae-hooks）事件触发 | 事件级（写文件、跑命令等） | hooks 默认 deny（v2 spec 提到） | 无 agent 进程概念 | 同上 | 事件型不直接适配「定时调度」 |
 | **Trae Schedule** | 内置 `Schedule`（cron） | 10 分钟（最小粒度） | **失败**：27 tick 仅 1 次成功，LLM 报 `No agent_flow_* tools available`。根因待定——可能是缺步骤 0（延迟加载），也可能需开 UI「自动运行 MCP」 | 每次触发新会话，无内存 | store 即外部记忆 | 待 5 分钟回测（见 §11） |
 | **Codex CLI** | 待 spike | 待 spike | 待 spike | 待 spike | 待 spike | 不知道是否暴露自动化能力 |
@@ -186,7 +186,7 @@ dispatcher（同工作区，可 Read 该文件）→ 读文档 → 组织答案
 
 - `automation_update` `mode: create`：
   - `name`：`agent-flow 调度员`
-  - `scheduleType`：`recurring`，`rrule`：`FREQ=MINUTELY;INTERVAL=10`（粒度下限待测）
+  - `scheduleType`：`recurring`，`rrule`：`FREQ=HOURLY`（**这是平台下限**；`FREQ=MINUTELY` 会直接报错，`FREQ=HOURLY;BYMINUTE=0,10,20,30,40,50` 能创建但 `BYMINUTE` 被忽略，实际仍按整点每小时一次）
   - `cwds`：`/Users/meow/workspace/agent-flow-ex`
   - `prompt`：§4.1 最终 Prompt 全文
 - **不需要** `connectorIds`：agent-flow-ex 是 user-level 本地 MCP，非 marketplace connector，实测不配置即可用。
@@ -224,6 +224,36 @@ dispatcher（同工作区，可 Read 该文件）→ 读文档 → 组织答案
 **这次真正证明了什么**：调度员不只是「能跑起来」，而是能完成闭环核心动作——读 question → 判定可答 → 从工作区取证 → 组织答案 → `submit(continue_of=)` → worker 带着答案续跑至完成。
 
 **观察方法注记**：`~/.workbuddy/traces/<pid>/*.json` 不完整（缺 `DeferExecuteTool` 的 span），且触发后不再刷新——**不能用作判成败的依据**。可用的是任务 status 转换、产物文件，以及调度员自己写的 `.workbuddy/automations/<id>/memory.md`。
+
+**5.1.5 V5 验收：孤儿 running 收割（2026-08-29 22:19，通过）**
+
+构造：提交 `task_mteg7i9z_f26af0`（`timeout_sec=60`，前台跑一个 10 分钟的 `sleep 5` 循环）→ `kill -9 -<runner_pid>` 杀掉 runner 进程组 → runner 被 SIGKILL、不走 finalize，任务滞留 `running`。
+
+| 项 | 证据 |
+| :--- | :--- |
+| 孤儿成立 | `running`，无对应进程；`elapsed_sec` 由 `(ended_at ?? now) - started_at` 实时计算，持续增长 |
+| 调度员收割 | 调度员记录：`elapsed_sec=1034 > 2×60` → `agent_flow_cancel` |
+| 终态 | `status = cancelled`；`agent_flow_status()` 返回 `[]` |
+| 无残留 | 无 runner/worker 进程；`git status` 为空 |
+
+> **注意**：V5 验证的是**状态层**的收割（滞留 running → cancelled）。**进程层**另有一个未解缺陷，见 §5.1.6。
+
+**5.1.6 实测缺陷：`cancel` 杀不到 agent 的孙进程**
+
+`src/runner.ts:58` 的假设是「不设 detached，agent 继承 runner 进程组，`kill(-runnerPid)` 可级联」。实测该假设**只对 agent 本体成立**：
+
+```
+runner(pgid A) ──> claude(pgid A) ✅ 被杀
+                     └─> Bash 命令(pgid B) ❌ 逃逸，继续运行
+```
+
+证据链：
+- 日志最后一条事件是 `assistant`（Bash 工具调用），之后无任何事件 → **runner 与 claude 均在 22:01:20 被杀**；
+- 但该 Bash 命令持续写 `/tmp/agent-flow-v5-heartbeat.log`，**5 秒一行、一直写到 22:11:03**（共 120 行，10 分钟）→ 它逃出了进程组，直到自然结束。
+
+影响：`cancel` / 孤儿收割后，agent 启动的长耗时 shell 命令会**继续跑**。本例中它自己结束了，但换成死循环或长 `sleep` 就是真正的失控进程。
+
+候选修复（未实施，待决）：`cancel` 改为递归遍历子进程树逐个 kill；或让 runner 记录 agent 派生的 pgid。前者跨平台实现较重，后者依赖 executor 配合。
 
 ### 5.2 Trae SOLO CN Schedule（备选，待 5 分钟回测）
 
@@ -310,10 +340,10 @@ agent_flow_list_needs_input(): { task_id, question, rounds, elapsed_sec }[]
 | 序号 | 验证项 | 状态 |
 | :--- | :--- | :--- |
 | V1 | 派发方触发的新会话能否拿到 `agent_flow_*` 工具并成功 `agent_flow_status()`？ | ✅ **已完成**（WorkBuddy automation 21:20 端到端实测：ToolSearch 加载 3 工具 → `status()` 返回 `[]` → idle）。Trae 侧 ❌ 27 tick 仅 1 次成功，根因待定 |
-| V2 | 实际触发间隔（10 分钟是否守时）？ | 待 recurring automation 上线后由自然 tick 覆盖 |
+| V2 | 实际触发间隔（10 分钟是否守时）？ | ⚠️ **已答，但是坏消息**：WorkBuddy 粒度 = **1 小时**。`MINUTELY` 不支持，`FREQ=HOURLY;BYMINUTE=0,10,...` 的 `BYMINUTE` 被静默忽略（`nextRunAt` = 下一整点，实测值 23:00:00） |
 | V3 | §4.1 prompt 在调度员会话跑一遍，能否成功调 `agent_flow_status` 无参并返回 idle？ | ✅ **已完成**（同上，run `success=true`） |
 | V4 | 制造一个 needs_input 任务，验证调度员自动 `submit(continue_of=)` 续跑成功 | ✅ **已完成**（2026-08-29 21:43，`task_mteffyqz_4af841`：rounds 1→2，`completed`，见 §5.1.4） |
-| V5 | 制造一个孤儿 running 任务（kill runner），验证调度员按 `elapsed_sec > 2×timeout_sec` 自动 cancel | ⏸ 待跑 |
+| V5 | 制造一个孤儿 running 任务（kill runner），验证调度员按 `elapsed_sec > 2×timeout_sec` 自动 cancel | ✅ **已完成**（2026-08-29 22:19，`task_mteg7i9z_f26af0` → `cancelled`，见 §5.1.5；附带缺陷见 §5.1.6） |
 | V6 | Trae hooks 是否支持「定时触发器」 | 不纳入 v1 候选；v1 已选 WorkBuddy automation，本项延后 |
 | V7 | Codex CLI 是否有自动化机制 | 不纳入 v1 候选；无一手知识，延后 spike |
 
@@ -332,15 +362,17 @@ V1/V3 已完成；V2 随 recurring 上线覆盖；V4/V5 是**真正的验收项*
 | WorkBuddy automation 跑不通（mcp.json 未加载） | 中 | 退回 launchd 兜底 |
 | Codex / Trae 路线 spike 失败 | 低 | 暂不纳入候选，后续 spike |
 | 调度员和用户「同时答 needs_input」冲突 | 中 | 「同 task_id 的 needs_input 只能被 submit 一次」，后到的答案直接被 `submit` 拒绝；用户回复优先（用户在会话里调工具时，调度员同时也在调 → 先到先得，输者返错） |
+| **cancel 后残留失控子进程**（2026-08-29 实测） | **中** | `cancel` 的 `kill(-runnerPid)` 只能级联到 runner + agent 本体，**杀不到 agent 的 Bash 工具派生的孙进程**（Claude Code 把命令放进独立进程组）。实测：kill 进程组后，一个 `sleep 5` 循环又跑了 9.7 分钟才自然结束。见 §5.1.6 |
+| **派发粒度只有 1 小时**（2026-08-29 实测） | **中** | WorkBuddy RRULE 不支持 `MINUTELY`，且 `BYMINUTE` 被**静默忽略**（`FREQ=HOURLY;BYMINUTE=0,10,...` 的 `nextRunAt` 是下一个整点）。最坏收敛因此退化为「轮数 × 60 分钟」。若要 10 分钟粒度，只能靠 Trae 回测成功（§11.1） |
 
 ---
 
 ## 9. 验收标准
 
-- [ ] V1（派发方选定）完成：Trae Schedule 进程内 MCP 可见性实测通过。
-- [ ] 一个 needs_input 任务在无人工干预下被自动续跑并完成；飞书卡片到达。
+- [x] V1（派发方选定）完成：WorkBuddy automation 端到端实测通过（§5.1.2）；Trae 见 §11.1。
+- [x] 一个 needs_input 任务在无人工干预下被自动续跑并完成（V4，§5.1.4）。
 - [ ] 调度员单次触发的 LLM token 用量实时测取均值并记录（Plan Task 7 汇总）。
-- [ ] 端到端延迟由 cron 粒度主导：最坏收敛 = needs_input 轮数 × 10 分钟；单次触发内完成 status 扫描与 submit（不对调度员处理承诺 30 秒级延迟）。
+- [ ] 端到端延迟由派发粒度主导：WorkBuddy 实测粒度 **1 小时**（RRULE 不支持 `MINUTELY`、`BYMINUTE` 被忽略），故最坏收敛 = needs_input 轮数 × **60 分钟**。若 Trae 回测成功（10 分钟粒度）可降回 × 10 分钟。单次触发内完成 status 扫描与 submit（不对调度员处理承诺 30 秒级延迟）。
 - [ ] 用户随时可通过「我在飞书里直接答 / 回到 IDE 自己调工具」打断调度员的决策；后到者收到明确错误而非覆盖。
 - [ ] agent-flow-ex 仅新增一处最小改动：`agent_flow_status` 暴露 `timeout_sec`（§6.3，Plan Task 2）。
 - [ ] WorkBuddy / Trae / Codex 任意一家派发方切换时，调度员 prompt 与 agent-flow-ex 实现不动。

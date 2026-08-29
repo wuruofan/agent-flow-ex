@@ -245,7 +245,24 @@ V4（needs_input 自动续跑）、V5（孤儿收割）在当前 prompt 下重�
 
 - [x] spec §4.1 最终 Prompt 加入 Step 0（工具获取，平台无关版）
 - [ ] **Trae 回测**：`Schedule update` 换 prompt → `trigger` 一次（人在 Trae UI 内执行）
-- [ ] 建 recurring WorkBuddy automation 调度员（RRULE 粒度实测，V2 守时验证）
-- [ ] V5 孤儿收割验收（kill runner 进程组 → 等 `elapsed_sec > 2×timeout_sec` → 调度员 cancel）
+- [x] 建 recurring WorkBuddy automation 调度员（`automation-1788012019991`，ACTIVE）
+- [x] V5 孤儿收割验收（`task_mteg7i9z_f26af0` → `cancelled`）
+
+### 新发现的两个缺陷（2026-08-29 22:20，均未修）
+
+1. **派发粒度只有 1 小时，不是 10 分钟**
+   `FREQ=MINUTELY` 直接报错（仅支持 DAILY/HOURLY/WEEKLY/MONTHLY/YEARLY）；
+   `FREQ=HOURLY;BYMINUTE=0,10,20,30,40,50` **能创建但 `BYMINUTE` 被静默忽略**——
+   `nextRunAt` 是下一个整点（实测 createdAt 22:00:19 → nextRunAt 23:00:00）。
+   → 端到端最坏收敛从「轮数 × 10 分钟」退化为「轮数 × **60 分钟**」。
+   → **这让 Trae 回测的价值上升**：Trae Schedule 是 10 分钟粒度，若能跑通则是更优派发方。
+
+2. **`cancel` 杀不到 agent 的孙进程**（`src/runner.ts:58` 的假设只对 agent 本体成立）
+   kill 进程组后 runner + claude 都死了（日志止于最后的 `assistant` 事件），
+   但 claude 的 Bash 工具派生的 `sleep 5` 循环**逃出进程组又跑了 9.7 分钟**
+   （心跳文件 5 秒一行、共 120 行，到 22:11:03 才自然结束）。
+   → `cancel`/孤儿收割后，agent 启动的长耗时 shell 命令会继续运行。
+   → 本例它自己结束了；换成死循环或长 `sleep` 就是真正的失控进程。
+   → 候选修复（待决）：`cancel` 递归遍历子进程树逐个 kill，或让 runner 记录派生 pgid。
 - [ ] 修正 spec/trial 中的 Trae MCP 配置路径：`~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（非 `~/.trae-cn/`）
 - [ ] 集成测试 baseline 复跑（沙盒 PATH 缺 `node`，非本任务问题）
