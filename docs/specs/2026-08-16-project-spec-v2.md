@@ -307,7 +307,7 @@ runner 在用户 prompt 外层统一包装一层行为契约，Trae 无需每次
 | MCP SDK | `@modelcontextprotocol/sdk` | 官方 |
 | 本地库 | `node:sqlite`（内置，同步 API） | 零原生编译；WAL 模式。若稳定性受限则 fallback `better-sqlite3` |
 | 进程管理 | `child_process.spawn(..., { detached: true, stdio: 'ignore' })` + `unref()` | 新进程组，父死子活 |
-| 取消 | `process.kill(-pid, 'SIGTERM')` | 负 pid 杀整个进程组（含 agent 的子 shell） |
+| 取消 | `process.kill(-pid, 'SIGTERM')` | 负 pid 杀整个进程组。⚠️ **只能级联到 agent 本体，杀不到 agent 派生的孙进程**——见 §14 与 §15 |
 
 ### 9.1 目录结构（草案）
 
@@ -372,7 +372,7 @@ CLI 能力以本地实证为准，不做假设：
 - [ ] worker 卡住时输出 NEEDS_INPUT，任务置 `needs_input` 且飞书收到带问题摘要的推送。
 - [ ] `continue_of` 答疑续跑后，worker 带着完整上下文继续执行并完成。
 - [ ] 任务完成时飞书收到结果摘要推送。
-- [ ] `agent_flow_cancel` 能终止运行中的任务（含其子进程）。
+- [ ] `agent_flow_cancel` 能终止运行中的任务（含其子进程）。⚠️ **2026-08-29 实测：只对 agent 本体成立，孙进程杀不掉**——见 §15。该项按当前实现**不通过**。
 - [ ] MCP server 崩溃/重启后，历史任务仍可查询；运行中任务不受影响照常完成。
 - [ ] 轮询一次 `agent_flow_status` 全程无阻塞（<200ms）。
 
@@ -383,7 +383,7 @@ CLI 能力以本地实证为准，不做假设：
 | 风险 | 等级 | 缓解 |
 | :--- | :--- | :--- |
 | NEEDS_INPUT 是概率性软契约，worker 可能不守规直接猜 | 中 | 外层契约包装 + 标记检测 + 轮次上限；上线后观察命中率迭代契约文本；备选：CLI hooks 输出结构化信号（复杂度高，v2 再议） |
-| 进程树清理（cancel 时 agent 子 shell） | 低 | 进程组 kill（负 pid） |
+| **进程树清理（cancel 时 agent 孙进程）** | **中**（原评级"低"已被实测推翻） | 见 §15。当前缓解：进程组 kill（负 pid）只能杀到 agent 本体；残留的孙进程若自身有退出条件会自然结束，否则需人工 `pkill` |
 | 环境依赖（bin / keys） | 低 | Config 显式声明 + 绝对路径 |
 | 同一 project_path 并发任务互相踩文件 | 中 | v1 不做排队；工具描述引导 plan 串行派发或确保改动文件不重叠 |
 | 单群 webhook 非真私聊 | 低 | 体验可接受；将来可换飞书 app API，仅改 notifier |
@@ -442,3 +442,46 @@ running → reviewing → (rework → running)* → completed
 | 双向问答 | 无 | needs_input 循环（Trae 答疑 + 会话续跑） |
 | 上游 API | 不存在的 3 个端点 | 无上游依赖 |
 | worker | 绑定 claude | Executor 抽象：claude（v1）+ opencode（预留） |
+
+---
+
+## 17. 实测修正（2026-08-29）
+
+> 本章记录**实测推翻了本文原有断言**的条目。写在这里而不是散落在各章节，是为了保留原始论断与修正的对照。
+
+### 17.1 `cancel` 的进程组 kill 杀不到 agent 的孙进程
+
+**原断言**（§9 技术选型表、§14 风险表）：`process.kill(-pid, 'SIGTERM')` 「负 pid 杀整个进程组（**含 agent 的子 shell**）」，风险等级评为「低」。
+
+**实测结论：该断言只对 agent 本体成立。**
+
+进程树实际形态：
+
+```
+runner(pgid A) ──> claude(pgid A)              ✅ 被杀
+                     └─> Bash 命令(pgid B)      ❌ 逃逸，继续运行
+```
+
+`src/runner.ts:58` 特意「不设 detached，让 agent 继承 runner 的进程组」，这一层是对的——claude 确实在 pgid A、确实被杀。问题出在**下一层**：Claude Code 的 Bash 工具会把派生的 shell 命令放入**独立进程组**（便于它对单条命令做超时/中断），于是命令脱离了 pgid A。
+
+**证据链**（全部可复现，非推测）：
+
+| # | 证据 | 说明 |
+| :--- | :--- | :--- |
+| 1 | 任务日志最后一条事件是 `assistant`（Bash 工具调用），之后无任何事件 | runner 与 claude 均在 kill 时刻死亡 |
+| 2 | `ps` 确认 runner 进程组已清空 | kill 本身生效 |
+| 3 | `/tmp/agent-flow-v5-heartbeat.log` 持续写入：120 行、相邻行间隔稳定 5 秒、末行 22:11:03 | 该 `sleep 5` 循环在 kill（22:01:20）之后**又跑了 9.7 分钟**才自然结束 |
+
+**影响**：
+
+- `agent_flow_cancel` 与调度员的孤儿收割只修正**状态层**（滞留 `running` → `cancelled`），**进程层**残留。
+- 若残留命令自身有退出条件（如本例的 120 次循环），最终会自行结束；若是死循环或长 `sleep`，则成为真正的失控进程，只能人工 `pkill`。
+- §13 验收项「`agent_flow_cancel` 能终止运行中的任务（含其子进程）」**按当前实现不通过**。
+
+**候选修复（均未实施，待决）**：
+
+1. `cancel` 改为递归遍历子进程树逐个 kill —— 跨平台实现较重（macOS 无 `/proc`，需 `pgrep -P` 递归或 `ps` 解析）。
+2. runner 记录 agent 派生的 pgid，cancel 时一并 kill —— 依赖 executor 配合上报，对 opencode 未必成立。
+3. 接受现状 + 文档化 —— 成本最低；残留命令大多自带退出条件，但无法杜绝失控进程。
+
+> 关联：自循环调度员 spec §5.1.6（同一缺陷在调度场景下的表现）。

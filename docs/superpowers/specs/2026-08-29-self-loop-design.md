@@ -255,6 +255,8 @@ runner(pgid A) ──> claude(pgid A) ✅ 被杀
 
 候选修复（未实施，待决）：`cancel` 改为递归遍历子进程树逐个 kill；或让 runner 记录 agent 派生的 pgid。前者跨平台实现较重，后者依赖 executor 配合。
 
+> 本缺陷**已同步修正到 v2 主规格 `docs/specs/2026-08-16-project-spec-v2.md` 新增的 §17**（原断言「负 pid 杀整个进程组（含 agent 的子 shell）」位于 v2 §9 与 §14，风险等级由「低」改「中」，§13 验收项标记为不通过）。
+
 ### 5.2 Trae SOLO CN Schedule（备选，待 5 分钟回测）
 
 **配置位置**：MCP server 在 `~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（普通 JSON，可直接编辑）。**该文件的 agent-flow-ex 注册已正确，无需改动。**
