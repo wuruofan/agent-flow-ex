@@ -61,18 +61,6 @@ async function main(): Promise<void> {
     );
   }
 
-  if (isTestMode()) {
-    server.tool(
-      "agent_flow_set_started_at",
-      ["TEST ONLY: 改写任务 started_at（unix 秒），用于 V5 孤儿收割验收快速触发 2×timeout_sec 判定。", "需在 MCP server 启动时设置环境变量 AGENT_FLOW_TEST_MODE=1。"].join("\n"),
-      {
-        task_id: z.string().describe("任务 id"),
-        started_at: z.number().describe("新的 started_at（unix 秒）"),
-      },
-      async (args) => json(setStartedAt(args))
-    );
-  }
-
   await server.connect(new StdioServerTransport());
   console.error("[agent-flow-ex] mcp server ready (stdio)");
 }
