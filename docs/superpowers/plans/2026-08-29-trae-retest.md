@@ -114,6 +114,68 @@
 
 ---
 
+## 4. 2026-08-29 22:52–23:00 实测补充（Trae 侧诊断 + 我方复核）
+
+Trae 侧连跑数轮，产出 `dispatcher-reports/dispatcher-1788015*.md`。我方对其结论**逐条复核**，结论有取有舍。
+
+### 4.1 采信的部分
+
+| 项 | 证据 |
+| :--- | :--- |
+| MCP 注册表正确 | `TRAE SOLO CN/User/mcp.json` 含 `agent-flow-ex`，路径真实 |
+| server 健康 | 手动 spawn + `initialize` 握手返回合规，38 小时内主会话调用全部 `code:0` |
+| Schedule 子会话拿不到工具 | `Extension <name> not found`，七种名字全试过 |
+
+### 4.2 **不采信**：`serverNames:[]` 不是原因
+
+Trae 报告称「`updatePluginMcpConfigs` 一直 `serverNames:[]` → Schedule 没绑定任何 MCP」，并据此建议「在 Schedule 里显式绑定 MCP」。
+
+**复核结果：该论据不成立。**
+
+```
+$ grep -o '"serverNames":\[[^]]*\]' mcp-servers-render.log | sort | uniq -c
+    205 "serverNames":[]
+```
+
+205 条，**从 2026-08-27 21:42:39 到 2026-08-29 22:58:20 从未非空**——包括 08-29 上午 09:15–11:45 主会话调用全部成功（`code:0`）的那段时间。
+
+→ `[PluginMcp]` 这条通道**本来就是空的，且与故障无关**。它是条无关通道，不是原因。照「在 Schedule 里显式绑定」去做，大概率白费。
+
+### 4.3 「自动运行 MCP」是许可开关，不是注入开关
+
+用户推测该开关已开、MCP 应有权限。磁盘核查：
+
+- `updatePluginMcpConfigs` 里 `"enabled": true`（205 条恒为 true）→ 许可**确实给了**
+- 同一条记录里 `serverNames: []` → 但**供给是空的**
+
+**给空集合授权，结果仍是空集。** 「有权限」与「有东西可跑」是两件事。
+
+另：该开关的实际取值在磁盘上**查不到**（`state.vscdb` 100 个 key 只有 `ai.config.autoRun.migration.*` 迁移标记；`User/settings.json`、`storage.json`、`SharedStorage` 均无），大概率存账号侧。**需人工在 UI 确认：设置 → 对话流（Work）→ 自动运行 MCP 是否为开。**
+
+- 已经开着 → 它只是许可开关，与本故障无关，**Trae 出局**
+- 其实没开 → 还有救，开了再 trigger 一次
+
+### 4.4 存在但**不建议**的兜底：Bash 直连 MCP（stdio）
+
+Schedule 子会话有 `RunCommand`，且 node 绝对路径可用。实测纯 shell 可绕过 MCP 注入：
+
+```sh
+printf '%s\n%s\n%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"sh","version":"1"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"agent_flow_status","arguments":{}}}' \
+ | /Users/meow/.nvm/versions/node/v24.18.0/bin/node \
+   /Users/meow/workspace/agent-flow-ex/dist/server.js
+```
+
+→ 返回 `[]`，不需要任何 MCP 客户端。**技术上可行。**
+
+**但建议不采用**：它会让 Trae 版 prompt 与 WorkBuddy 版分叉，破坏「prompt 即规约 / 派发方可替换」这条不变量——那正是本设计最值钱的部分。为 6 倍粒度优势换掉它不划算。
+
+**若 1 小时粒度确实不可接受**，更干净的是 spec §5.4 的 launchd 路线（系统级 cron，10 分钟 + 纯脚本轮询器），它不污染 prompt。
+
+---
+
 ## 4. 结果回填
 
 回测完请把结论写进 spec（`docs/superpowers/specs/2026-08-29-self-loop-design.md`）：
