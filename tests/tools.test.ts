@@ -140,3 +140,33 @@ describe("cancel", () => {
     expect(cancel({ task_id: "" })).toEqual({ error: "task_id is required" });
   });
 });
+
+describe("setStartedAt (test helper)", () => {
+  beforeEach(() => { process.env.AGENT_FLOW_TEST_MODE = "1"; });
+  afterEach(() => { delete process.env.AGENT_FLOW_TEST_MODE; });
+  it("rewrites started_at when test mode enabled", async () => {
+    const { setStartedAt } = await import("../src/tools/test-helpers.js");
+    const store = openStore(join(home, "tasks.db"));
+    store.createTask({
+      id: "task_sa", prompt: "x", project_path: home, executor: "fake", profile: "fake",
+      timeout_sec: 60, log_path: join(home, "logs", "sa.jsonl"), role: "worker", created_at: 1,
+    });
+    store.claimToRunning("task_sa", process.pid);
+    expect(setStartedAt({ task_id: "task_sa", started_at: 1234 })).toEqual({ task_id: "task_sa", started_at: 1234 });
+    const t = store.getTask("task_sa");
+    expect(t?.started_at).toBe(1234);
+  });
+  it("rejects unknown task_id", async () => {
+    const { setStartedAt } = await import("../src/tools/test-helpers.js");
+    expect(setStartedAt({ task_id: "nope", started_at: 1 })).toEqual({ error: "task nope not found" });
+  });
+  it("rejects bad started_at", async () => {
+    const { setStartedAt } = await import("../src/tools/test-helpers.js");
+    expect(setStartedAt({ task_id: "x", started_at: NaN })).toEqual({ error: "started_at must be a finite number (unix seconds)" });
+  });
+  it("refuses when test mode disabled", async () => {
+    delete process.env.AGENT_FLOW_TEST_MODE;
+    const { setStartedAt } = await import("../src/tools/test-helpers.js");
+    expect(setStartedAt({ task_id: "x", started_at: 1 })).toEqual({ error: "AGENT_FLOW_TEST_MODE not enabled" });
+  });
+});

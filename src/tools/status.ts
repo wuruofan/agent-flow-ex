@@ -8,6 +8,7 @@ interface TaskView {
   status: string;
   rounds: number;
   profile: string;
+  timeout_sec: number;
   elapsed_sec: number | null;
   progress: string | null;
   files_changed: string[];
