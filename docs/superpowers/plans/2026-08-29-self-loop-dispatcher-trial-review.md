@@ -202,14 +202,19 @@ V4（needs_input 自动续跑）、V5（孤儿收割）在当前 prompt 下重�
 
 ---
 
-## 6. 遗留待办（更新版）
+## 6. 执行记录与遗留待办
 
-- [ ] `src/server.ts:64-74` 删除重复注册 + 补一个「测试模式下 server 能正常注册工具」的测试
-- [ ] 回滚 `~/.workbuddy/mcp.json` 的 `env`
+### 已完成（2026-08-29 21:00）
+
+- [x] `src/server.ts` 删除重复注册 + 补「注册路径」回归测试 → commit `6d25e1d`
+- [x] 回滚 `~/.workbuddy/mcp.json` 的 `env` → 已清；MCP server 已重启（新 pid `44170`，`ps -E` 确认环境无 `AGENT_FLOW_*`，工具集 = 3 个）
+- [x] 提交 `trial.md` 与本文档 → commit `a200254`
+
+### 待办
+
 - [ ] spec §4.1 最终 Prompt 加入 Step 0（工具获取，平台无关版）
 - [ ] **Trae 回测**：`Schedule update` 换 prompt → `trigger` 一次（人在 Trae UI 内执行）
 - [ ] 建 WorkBuddy automation 调度员（RRULE 粒度实测）
 - [ ] 续跑 Task 4/5 验收
-- [ ] 提交 `trial.md` 与本文档
 - [ ] 修正 spec/trial 中的 Trae MCP 配置路径：`~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（非 `~/.trae-cn/`）
 - [ ] 集成测试 baseline 复跑（沙盒 PATH 缺 `node`，非本任务问题）
