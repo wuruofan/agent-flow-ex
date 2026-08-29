@@ -110,6 +110,15 @@ describe("status", () => {
   it("returns error for unknown task_id", () => {
     expect(status({ task_id: "nope" })).toEqual({ error: "task nope not found" });
   });
+  it("exposes timeout_sec in status view", () => {
+    const store = openStore(join(home, "tasks.db"));
+    store.createTask({
+      id: "task_to", prompt: "x", project_path: home, executor: "fake", profile: "fake",
+      timeout_sec: 120, log_path: join(home, "logs", "to.jsonl"), role: "worker", created_at: 1,
+    });
+    const v = status({ task_id: "task_to" }) as { timeout_sec?: number };
+    expect(v.timeout_sec).toBe(120);
+  });
 });
 
 describe("cancel", () => {

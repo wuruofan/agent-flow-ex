@@ -24,6 +24,7 @@ function view(t: Task): TaskView {
     status: t.status,
     rounds: t.rounds,
     profile: t.profile,
+    timeout_sec: t.timeout_sec,
     elapsed_sec: t.started_at ? (t.ended_at ?? now) - t.started_at : null,
     progress: t.progress,
     files_changed: t.files_changed,
