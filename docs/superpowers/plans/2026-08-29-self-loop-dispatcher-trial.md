@@ -63,7 +63,7 @@
 >
 > ⚠️ **再更正（同日 23:25，找到真因）**：换了带步骤 0 的新 prompt 后仍失败，但**不是**「平台内部行为」。真因是 **Trae 的 MCP 客户端在 11:56:19 断连后不会自动重连**——`exthost/mcp-servers-host.log` 显示 `MCPClient#onClose → Disconnected` 之后 11 小时无任何事件，且此后成功调用次数为 0。主 IDE 显示的 3 个工具是**过期缓存**。诱导因素是当时为注入 V5 测试工具而 kill/重启 MCP server 进程。
 >
-> 因此 22:52–23:00 那轮「复测」**无效**——它测的是已死的客户端，新 prompt 从未被真正检验。**修复动作**：强制 Trae 重连（MCP 面板 disable → re-enable，或重启 Trae），确认 host.log 出现新的 `Connected` 后重跑。详见 `docs/superpowers/diagnostics/2026-08-29-trae-mcp-visibility.md`。
+> 因此 22:52–23:00 那轮「复测」**无效**——它测的是已死的客户端，新 prompt 从未被真正检验。**修复动作**：强制 Trae 重连（MCP 面板 disable → re-enable，或重启 Trae），确认 host.log 出现新的 `Connected` 后重跑。详见 `docs/diagnostics/2026-08-29-trae-mcp-visibility.md`。
 
 ---
 

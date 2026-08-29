@@ -76,7 +76,7 @@ worker 终态 ─> 飞书卡片 ─> 用户 ─> 回到 IDE ─> 告诉我 ─> 
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **WorkBuddy automation** | `automation_update` + RRULE / `scheduledAt` | **1 小时**（实测：`MINUTELY` 不支持，仅 DAILY/HOURLY/WEEKLY/MONTHLY/YEARLY；`BYMINUTE` 被静默忽略） | **已验证**：初始工具列表**不可见**，须 `ToolSearch` 加载后 `DeferExecuteTool` 调用（见 §4.1 步骤 0） | 每次触发新会话；平台另提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆（v1 不用） | store 即外部记忆 | **v1 首选**（2026-08-29 21:20 端到端实测通过） |
 | **Trae IDE hooks** | hooks 框架（trae-hooks）事件触发 | 事件级（写文件、跑命令等） | hooks 默认 deny（v2 spec 提到） | 无 agent 进程概念 | 同上 | 事件型不直接适配「定时调度」 |
-| **Trae Schedule** | 内置 `Schedule`（cron） | 10 分钟（最小粒度） | **未达（待重跑回测）**：真因已定 = **Trae 的 MCP 客户端 11:56:19 `MCPClient#onClose → Disconnected` 后不会自动重连**，此后成功调用次数为 0（含主会话）。主 IDE 显示的 3 工具是**过期缓存**。诱导因素：为注入 V5 测试工具而 kill/重启 MCP server 进程。**修复动作**：MCP 面板 disable → re-enable `agent-flow-ex`（或重启 Trae）强制重连 | 每次触发新会话，无内存 | store 即外部记忆 | 重连后按 `../plans/2026-08-29-trae-retest.md` 重跑回测；仍不通按 §5.4 走 launchd |
+| **Trae Schedule** | 内置 `Schedule`（cron） | 10 分钟（最小粒度） | **未达（待重跑回测）**：真因已定 = **Trae 的 MCP 客户端 11:56:19 `MCPClient#onClose → Disconnected` 后不会自动重连**，此后成功调用次数为 0（含主会话）。主 IDE 显示的 3 工具是**过期缓存**。诱导因素：为注入 V5 测试工具而 kill/重启 MCP server 进程。**修复动作**：MCP 面板 disable → re-enable `agent-flow-ex`（或重启 Trae）强制重连 | 每次触发新会话，无内存 | store 即外部记忆 | 重连后按 `../../diagnostics/2026-08-29-trae-retest.md` 重跑回测；仍不通按 §5.4 走 launchd |
 | **Codex CLI** | 待 spike | 待 spike | 待 spike | 待 spike | 待 spike | 不知道是否暴露自动化能力 |
 | **launchd / cron** | 系统级 | 分钟级 | 进程独立启动，**必须手动加载 MCP**（启动参数注入或环境变量） | N/A | 文件系统 | 通用兜底，需写调度脚本 |
 
@@ -86,7 +86,7 @@ worker 终态 ─> 飞书卡片 ─> 用户 ─> 回到 IDE ─> 告诉我 ─> 
 **结论**：
 
 - **首选 WorkBuddy automation**：2026-08-29 21:20 实测端到端通过——定时触发 → `ToolSearch` 加载 3 个工具 → `ToolSearch`/`DeferExecuteTool` 调 `agent_flow_status()` → 返回 `[]` → 判定 idle → 无副作用。
-- **Trae Schedule 待定**（v1 暂不纳入、保留回测窗口）：**真因已定**——Trae 的 MCP 客户端 2026-08-29 11:56:19 `MCPClient#onClose → Disconnected` 后**不自动重连**，此后成功调用 0 次；主 IDE 的 3 工具是过期缓存。既不是配置问题、也不是 prompt 问题、更不是「自动运行 MCP」开关问题（该开关 205 条日志恒为 `enabled:true`）。**修复动作**：MCP 面板 disable → re-enable `agent-flow-ex`（或重启 Trae）强制重连，确认 `exthost/mcp-servers-host.log` 出现新的 `Connected` 后**重跑回测**。完整证据见 [`../diagnostics/2026-08-29-trae-mcp-visibility.md`](../diagnostics/2026-08-29-trae-mcp-visibility.md)。
+- **Trae Schedule 待定**（v1 暂不纳入、保留回测窗口）：**真因已定**——Trae 的 MCP 客户端 2026-08-29 11:56:19 `MCPClient#onClose → Disconnected` 后**不自动重连**，此后成功调用 0 次；主 IDE 的 3 工具是过期缓存。既不是配置问题、也不是 prompt 问题、更不是「自动运行 MCP」开关问题（该开关 205 条日志恒为 `enabled:true`）。**修复动作**：MCP 面板 disable → re-enable `agent-flow-ex`（或重启 Trae）强制重连，确认 `exthost/mcp-servers-host.log` 出现新的 `Connected` 后**重跑回测**。完整证据见 [`../../diagnostics/2026-08-29-trae-mcp-visibility.md`](../../diagnostics/2026-08-29-trae-mcp-visibility.md)。
 - **22:52–23:00 那轮回测无效**：它是在客户端已断连的状态下跑的，新 prompt 从未被真正检验。据此得出的「Trae 出局」结论**已撤回**。
 - **Codex 路线必须 spike**：当前没有任何 Codex 自动化机制的一手知识，不应基于假设设计方案。
 

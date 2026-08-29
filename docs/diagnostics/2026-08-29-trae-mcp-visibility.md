@@ -15,14 +15,17 @@
 
 ---
 
-## 2. 为什么记在 `diagnostics/` 而不是 `debug/`
+## 2. 为什么是 `docs/diagnostics/` 而不是 `docs/debug/`，也不放在 `superpowers/` 下
 
-| | `debug/` | `diagnostics/`（采用） |
-| :--- | :--- | :--- |
-| 语义 | 隐含「未修完、待修」 | 一次有结论的调查 |
-| 与既有目录一致性 | `specs/ / plans/ / reviews/ / designs/` 全是名词类型，`debug` 是唯一动词 | 一致 |
+| 选项 | 取舍 |
+| :--- | :--- |
+| `docs/debug/` | ❌ 语义隐含「未修完、待修」；且 `specs/ plans/ reviews/ designs/` 全是名词类型，`debug` 是唯一动词 |
+| `docs/superpowers/diagnostics/` | ❌ **已改出**。`superpowers` 是**插件名**，其 `specs/`、`plans/` 由该插件的工作流创建；本调查与插件无关，不该寄居在插件命名空间下 |
+| **`docs/diagnostics/`**（采用） | ✅ 项目级文档类型，与 `specs/ plans/ reviews/ designs/` 平级，不依赖任何插件 |
 
-放在 `superpowers/` 下而非 `docs/debug/`：这 4 份报告全部服务于自循环调度员这条线，与 `superpowers/plans/`、`superpowers/specs/` 同属一个上下文。`docs/debug/` 会变成跨项目的杂物抽屉。
+同时把 `2026-08-29-trae-retest.md`（回测手册）也一并移入——它同样是本次调查的产物，且与该文档强耦合。
+
+> 注：`docs/superpowers/` 下保留的是由 superpowers 工作流产出的自循环 spec / plan / trial / review 四份文档，它们确实属于该插件的工作流产物。
 
 ---
 
@@ -56,11 +59,46 @@
 
 **11:56:19 之后成功调用次数 = 0。**
 
-### 3.3 断连诱因
+### 3.3 断连诱因（含两个假设的实测排除）
 
-11:56 前后正在做的事：为 V5 注入 `agent_flow_set_started_at` 测试工具 → **kill 并重启 MCP server 进程**（pid 17974→80852→4060→4180→4340），同时改了 `~/.workbuddy/mcp.json`。
+**现象**：11:56 前后正在为 V5 注入 `agent_flow_set_started_at` 测试工具 → **kill 并重启 MCP server 进程**（pid 17974→80852→4060→4180→4340），同时改了 `~/.workbuddy/mcp.json`。
 
 server 进程被杀 → Trae 的 MCPClient 收到 `onClose` → 标记 Disconnected → **不自动重连**。
+
+#### 假设 A：MiniMax M3 五小时 token 额度在 ~11:51 用尽 → ❌ 不成立
+
+| 检查 | 结果 |
+| :--- | :--- |
+| Trae 日志 11:45–11:58 的 token / quota / rate / 429 记录 | **零命中** |
+| 11:51:25（最后成功）→ 11:57:09（首次失败）之间 | 除 11:56:19 断连外**无任何事件** |
+| 机制合理性 | MCP server 是纯 node 进程，**不发起任何 LLM 调用**；token 额度影响的是 worker agent，不会让本地 stdio 进程退出 |
+
+#### 假设 B：WorkBuddy 连上 MCP 后 Trae 就连不上了（互斥）→ ❌ 不成立
+
+**直接实验**（在 WorkBuddy 的 44170 存活期间）：
+
+```sh
+# 第二个 server 进程，用同一个 AGENT_FLOW_HOME（同一份 tasks.db）
+printf '<initialize>\n<initialized>\n<tools/call agent_flow_status>' \
+  | /Users/meow/.nvm/versions/node/v24.18.0/bin/node dist/server.js
+```
+
+→ 返回 `[]`，无 error。**同库多进程共存正常**。（此前 `tests/server-tools.test.ts` 也会并发 spawn 两个进程，同样正常。）
+
+机制上也不该互斥：stdio MCP server 是**每客户端各 spawn 一个进程**，无共享 socket；SQLite 走 WAL，支持多进程读写。
+
+#### 那 1.3 秒的「巧合」怎么解释
+
+```
+11:56:19.831  Trae:      MCPClient#onClose → Disconnected
+11:56:21.136  WorkBuddy: Connected to custom-mcp:agent-flow-ex   ← +1.3s
+11:56:43.295  WorkBuddy: Connected（第二次）
+11:57:19.739  WorkBuddy: Connected（第三次）
+```
+
+**不是互斥，是同一次 kill 的两个不同反应**：server 进程被杀 → 两个客户端同时掉线 → **WorkBuddy 自动重连（2 秒内，且之后又重连 2 次）**，**Trae 不重连**。
+
+WorkBuddy 的重连能力是可验证的：21:01 我手动 kill 掉它的 server（pid 4340）后，它在 **21:01:13** 自动重连成功，无需任何人工干预。
 
 > 当前磁盘状态佐证：只有一个 `agent-flow-ex` server 进程（pid 44170），父进程是 **WorkBuddy**。**Trae 名下没有 server 进程**——它的客户端确实处于无连接状态。
 
@@ -118,7 +156,7 @@ server 进程被杀 → Trae 的 MCPClient 收到 `onClose` → 标记 Disconnec
    - Trae MCP 面板 → `agent-flow-ex` → disable → re-enable
    - 或直接退出并重启 Trae（更彻底）
 2. **验证重连成功**：确认 `exthost/mcp-servers-host.log` 尾部出现新的 `Connected`（或 `listTools Got tools: agent_flow_submit, ...`）。
-3. **重跑回测**：按 `../plans/2026-08-29-trae-retest.md` 用带步骤 0 的 prompt `trigger` 一次。
+3. **重跑回测**：按 `2026-08-29-trae-retest.md` 用带步骤 0 的 prompt `trigger` 一次。
 4. **记录结果**并回填 spec §3 / §7 / §11。
 
 > ⚠️ 重连后若仍 `Extension not found`，才是真的平台问题。但按当前证据，概率低。
