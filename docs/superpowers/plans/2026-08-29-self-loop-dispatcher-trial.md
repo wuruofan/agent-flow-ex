@@ -45,33 +45,62 @@
    - 因此调试过程中「改 `~/.workbuddy/mcp.json`」是**无效路径**——那个文件是 WorkBuddy 的，TRAE 根本不读。
 2. 官方文档给出一个此前被忽略的开关：**对话流设置 →「自动运行 MCP」**——开启后智能体使用时会自动运行 MCP Server 及内部工具。这正是「定时触发的全新会话能否拿到工具」的关键配置项。
 
-### 3.3 合理解释（按证据权重排序）
-1. **「自动运行 MCP」未开启**（高概率）：Schedule 触发的新会话不会自动加载/运行 MCP 工具，于是整批 tick 无工具可用。早期那 1 次成功可能是当时配置/状态恰好满足加载条件，后续环境变化后失效。
-2. **Schedule 会话与主 IDE 会话的 MCP toolset 是独立视图**（中概率）：主 IDE 重启 MCP server 后刷新了工具集，但 Schedule 隔离会话不自动同步，仍引用旧视图 → 工具消失。
-3. **`env` 字段不被 Trae UI schema 接受**（低概率，已被本轮 UI 配置证据排除部分）：Trae 以 UI 配置为准，不读含 `env` 的文件 JSON，故该条目本就无意义。
+### 3.3 真实根因（修订，2026-08-29）
+**WorkBuddy 复盘文档 `2026-08-29-trae-retest.md` 指出，27 tick 只有 1 次成功的真正首因不是平台配置，而是当初 prompt 缺了「步骤 0：工具获取」**：
 
-> 一站定性：**这次失败是「调度会话拿不到 MCP 工具」的平台配置问题，不是调度员 prompt 也不是 agent-flow-ex 代码问题**。task 状态机、`timeout_sec` 暴露等方案侧改动均有效。
+- Schedule 触发的新会话，初始工具列表里**看不到** `agent_flow_*`（仅主 IDE 会话可见）。
+- 探测阶段用的 prompt 是裸的「调 `agent_flow_status()`」，LLM 主动尝试调，结果成功——所以那 1 次「侥幸」其实是**行为对路**的产物。
+- 后来填的正式 Prompt 第 1 步就直接调 status，**没有先强制 LLM 主动获取工具**——LLM 看到初始列表里没有就判定不存在，直接报 idle。这是剩下 26 次失败的直接原因。
+
+修订后合理解释（按证据权重）：
+1. **旧 prompt 缺步骤 0**（首要）：已通过将「步骤 0：工具获取（必做，不可跳过）」写进 spec §4.1 解决。Trae 路线回测前必须使用新 prompt。
+2. **「自动运行 MCP」未开启**（次要）：若新 prompt 仍报 tools unavailable，下一步再去开关排查。
+3. **Schedule 会话与主 IDE MCP toolset 是独立视图**（次要）：即使后续重启 MCP server，Schedule 会话不会自动同步主 IDE 视图。
+
+> 修订定性：**这次失败的根因是 prompt 没让 LLM 主动获取工具，不是平台配置问题**。`timeout_sec` 等方案侧改动均有效。
+>
+> ⚠️ **更正（2026-08-29 23:20，我方实测复核）**：WorkBuddy 路线**并非**「天然就能加载 MCP toolset」。WorkBuddy 触发的新会话同样看不到初始工具列表（探针步骤 1 = 无），是靠 prompt 里显式的 `ToolSearch` 步骤 0 才拿到工具的。**两个平台是同一症状、同一解法。**
+>
+> ⚠️ **再更正（同日 23:25，找到真因）**：换了带步骤 0 的新 prompt 后仍失败，但**不是**「平台内部行为」。真因是 **Trae 的 MCP 客户端在 11:56:19 断连后不会自动重连**——`exthost/mcp-servers-host.log` 显示 `MCPClient#onClose → Disconnected` 之后 11 小时无任何事件，且此后成功调用次数为 0。主 IDE 显示的 3 个工具是**过期缓存**。诱导因素是当时为注入 V5 测试工具而 kill/重启 MCP server 进程。
+>
+> 因此 22:52–23:00 那轮「复测」**无效**——它测的是已死的客户端，新 prompt 从未被真正检验。**修复动作**：强制 Trae 重连（MCP 面板 disable → re-enable，或重启 Trae），确认 host.log 出现新的 `Connected` 后重跑。详见 `docs/superpowers/diagnostics/2026-08-29-trae-mcp-visibility.md`。
 
 ---
 
 ## 4. 下一步怎么做（按顺序执行）
 
-### 4.1 先验证 UI 配置（成本最低，最高概率）
-在 Trae UI 里完成两件事（代理无法代改 UI，需人工操作）：
-1. **设置 → MCP**：确认 `agent-flow-ex` server 存在；没有则「手动配置」：
-   ```json
-   {
-     "command": "node",
-     "args": ["/Users/meow/workspace/agent-flow-ex/dist/server.js"],
-     "env": { "AGENT_FLOW_TEST_MODE": "1" }
-   }
-   ```
-   `dist/server.js` 已含 V5 测试工具，可直接用。
-2. **设置 → 对话流（Work）/ 自动运行 MCP**：开启 **「自动运行 MCP」**。
+### 4.0 第二轮实测（2026-08-29 14:51 UTC）结论
+- 调度员运行诊断模式（要求写文件到 `dispatcher-reports/dispatcher-<ts>.md`），触发 **3 次**。
+  - 第一次：调度员写出了 `dispatcher-1764400000.md`（**说明 Trae Schedule 隔离会话**确实有 Write/Read 工具**），但时间戳是占位符（PATH 缺 `date` / `node`）。
+  - 第二次（要求测试 MCP server 启动）：写出了 `dispatcher-1788015122.md`、`dispatcher-1788015123.md` 两份。
+- 你从 UI 复制粘贴的 `tools unavailable` 报告里写了关键的**实测证据**：
+  - 调度员在 `ALL_TOOLS`（即 Exec 沙盒视图）里**没看到** `agent_flow_*`
+  - 扫描 `/Users/meow/.trae-cn/mcps/` **未注册** agent_flow 服务器（但这是**运行时实例目录**，不是注册表）
+- **真实根因（高置信度，2026-08-29 15:08 UTC 定稿）**：
+  1. 你**早就配置好了** MCP：`~/Library/Application Support/TRAE SOLO CN/User/mcp.json` 含 `agent-flow-ex` → `node /Users/meow/workspace/agent-flow-ex/dist/server.js`。
+  2. Trae `mcp-servers-host.log` 历史显示 `agent-flow-ex` 在 **11:42:46** `Connected`、**11:51:25** 还在 `Got tools: agent_flow_submit/agent_flow_status/agent_flow_cancel`。
+  3. **11:56:19** 出现 `MCPClient#onClose → Disconnected`——这是**主 IDE 重启 / 显式 kill MCP server 进程**留下的痕迹，**之后没有自动 reconnect**。
+  4. 这恰好对得上 27 tick 中 1/27 成功 + 26/27 失败的模式：探测阶段那次 11:51 的成功在 disconnect 之前，后面所有 Schedule 触发都在 disconnect 之后。
+- **教训**：
+  1. 「让调度员写报告」**可行**——上一轮我以为不可行，是因为我**误读**：调度员当时其实写了 `dispatcher-1764400000.md` 我没看到。
+  2. `~/.trae-cn/mcps/` ≠ MCP 注册表；注册表在 `~/Library/Application Support/TRAE SOLO CN/User/mcp.json`。调度员第一次诊断据此下错了结论。
+  3. `Trae Schedule 隔离会话的可见工具集 ≠ 主 IDE 工具集 ≠ Exec 沙盒视图`，但都是 Trae **同一份 MCP 注册表**驱动的；只要 MCP server 在跑，Schedule 会话也能看到工具（与工作目录、用户权限解耦）。
 
-完成后：把 Schedule `8a989934` 恢复 Active 并 `trigger` 一次，验证新会话能否 `agent_flow_status()`。
+### 4.1 真实根因（终稿，2026-08-29 15:18 北京时间）
 
-### 4.2 若仍不通：切换派发方（备选，prompt 无需改动，因为「prompt 即规约」）
+- `agent-flow-ex` MCP server **一直健康运行**，从未离开主 IDE 会话的视图。
+- Trae Schedule 隔离会话**不会同步主 IDE 的 MCP toolset**——这是 Trae 平台的会话隔离设计，不是配置问题、不是 prompt 问题、也不是 MCP server 自身的健康问题。
+- 「重启 MCP server 让 Schedule 会话重新看到」**是无意义动作**——MCP server 从未断过；就算它重启一万次，Schedule 隔离会话也不会因此加载它。
+- `mcp-servers-host.log` 在 11:56:19 出现的 `MCPClient#onClose / Disconnected` 是 MCP server 进程被 kill 一次的孤立事件，主 IDE 早已自愈并继续 `Got tools`，与 Schedule 会话看到的现象无因果关系。
+
+### 4.2 结论
+
+**Trae Schedule 路线 v1 出局**——不要在这条路上再花时间。需要 10 分钟粒度按 spec §5.4 走 launchd 兜底（spawn `dist/server.js` 一次调 `agent_flow_status` 退出，纯轮询器、无 LLM 决策能力）。
+
+### 4.3 WorkBuddy 路线已全绿（V1–V5）
+
+- 1 小时粒度；如不满足延迟需求再考虑 launchd。
+- WorkBuddy 的 `connector-proxy` 自带 MCP 工具发现机制，所以走通。
 - **WorkBuddy automation**（备选，v2 spec 已用）：先实测「automation 触发的新 agent 进程是否自动加载 `~/.workbuddy/mcp.json`」，通过则把 §4.1 最终 Prompt 迁过去、cron 换成 RRULE/scheduledAt。
 - **launchd / cron**（兜底）：写 `dispatcher.mjs` 直接 spawn `dist/server.js` 一次调 `agent_flow_status` 退出。**代价**：失去 LLM 决策（退化为纯轮询器）。
 

@@ -1,5 +1,14 @@
 # Trae 调度员回测操作手册
 
+**状态**：⚠️ **22:52–23:00 那轮回测无效，须重跑。**
+
+> **无效原因**：Trae 的 MCP 客户端早在 11:56:19 就断连且不会自动重连（见 `docs/superpowers/diagnostics/2026-08-29-trae-mcp-visibility.md` §3）。那轮是在**客户端已死**的状态下测的，新 prompt 从未被真正检验。
+> 先前据此得出的「Trae 出局」结论**已撤回**。
+
+**重跑前必做（1 分钟）**：先让 Trae 重连 MCP —— MCP 面板 `agent-flow-ex` disable → re-enable，或退出重启 Trae。确认 `exthost/mcp-servers-host.log` 尾部出现新的 `Connected` / `listTools Got tools` 再开始。
+
+**诊断归档**：`docs/superpowers/diagnostics/2026-08-29-trae-mcp-visibility.md`（含 `raw/` 下 4 份 Trae 侧原始报告与逐条复核）
+
 **用途**：给在 Trae 里手动执行的人照着做。预计 5–10 分钟。
 **前置结论**：WorkBuddy 路线已全绿（V1–V5），所以这次回测**不是救火**，而是决定「要不要从 60 分钟粒度换回 10 分钟粒度」。
 
