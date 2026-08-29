@@ -204,6 +204,21 @@ V4（needs_input 自动续跑）、V5（孤儿收割）在当前 prompt 下重�
 
 ## 6. 执行记录与遗留待办
 
+### 已完成（2026-08-29 21:20）
+
+- [x] **WorkBuddy 调度员端到端实测通过**（一次性 automation `automation-1788009370311`，21:20 触发）：
+  ```
+  21:20:27  [SchedulerEngine] Automation is due
+  21:20:50  [ConnectorMcpProxy] callTool agent-flow-ex_agent_flow_status args={} → "[]"
+  21:21:06  [AutomationService] Run finalized: success=true, outputLen=179
+  ```
+  调度员自述：ToolSearch 返回 3 个工具、`status()` 返回 `[]`、本轮 idle、未 submit/cancel/写文件。
+  → **步骤 0 有效**。Trae 那 26 次失败的「不是平台玄学配置，而是 prompt 没教加载工具」这一判断，得到正面支持。
+- [x] 附带查明：automation 触发会话由 `--mcp-config` 注入 `connector-proxy`（`defer_loading: true`），三工具以 `agent-flow-ex_agent_flow_*` 名注册；平台另提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆（v1 决议不用，见 spec §11.6）。
+- [x] spec §4.1 加入步骤 0；§3/§5/§7/§11 派发方首选改为 WorkBuddy automation
+
+> **边界**：本次只验证「能跑起来 + 正确判定空闲」。V4（自动续跑）/ V5（孤儿收割）尚未跑，那才是真正的验收项。
+
 ### 已完成（2026-08-29 21:00）
 
 - [x] `src/server.ts` 删除重复注册 + 补「注册路径」回归测试 → commit `6d25e1d`

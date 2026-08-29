@@ -74,16 +74,19 @@ worker 终态 ─> 飞书卡片 ─> 用户 ─> 回到 IDE ─> 告诉我 ─> 
 
 | 派发方 | 触发机制 | 触发粒度 | 进程内 MCP 可见性 | 上下文维持 | 状态持久化 | 备注 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **WorkBuddy automation** | `automation_update` + RRULE / `scheduledAt` | 分钟级（实测需验证下限） | **未验证**（user-level mcp.json 理论上加载） | 每次触发是新会话，无内存 | store 即外部记忆 | 最熟悉的方案，v2 spec 已用 |
+| **WorkBuddy automation** | `automation_update` + RRULE / `scheduledAt` | 分钟级（RRULE 粒度下限待测） | **已验证**：初始工具列表**不可见**，须 `ToolSearch` 加载后 `DeferExecuteTool` 调用（见 §4.1 步骤 0） | 每次触发新会话；平台另提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆（v1 不用） | store 即外部记忆 | **v1 首选**（2026-08-29 21:20 端到端实测通过） |
 | **Trae IDE hooks** | hooks 框架（trae-hooks）事件触发 | 事件级（写文件、跑命令等） | hooks 默认 deny（v2 spec 提到） | 无 agent 进程概念 | 同上 | 事件型不直接适配「定时调度」 |
-| **Trae Schedule** | 内置 `Schedule`（cron） | 10 分钟（最小粒度） | 进程内 MCP 可见性**已实证通过**（探测 Schedule `trigger` 实测） | 每次触发新会话，无内存 | store 即外部记忆 | **v1 首选** |
+| **Trae Schedule** | 内置 `Schedule`（cron） | 10 分钟（最小粒度） | **失败**：27 tick 仅 1 次成功，LLM 报 `No agent_flow_* tools available`。根因待定——可能是缺步骤 0（延迟加载），也可能需开 UI「自动运行 MCP」 | 每次触发新会话，无内存 | store 即外部记忆 | 待 5 分钟回测（见 §11） |
 | **Codex CLI** | 待 spike | 待 spike | 待 spike | 待 spike | 待 spike | 不知道是否暴露自动化能力 |
 | **launchd / cron** | 系统级 | 分钟级 | 进程独立启动，**必须手动加载 MCP**（启动参数注入或环境变量） | N/A | 文件系统 | 通用兜底，需写调度脚本 |
 
+> **矩阵里「MCP 可见性」这一列的正确测法**（2026-08-29 教训）：不能只问「能不能调通」，必须拆成三问——① 新会话初始工具列表是否直接可见？② 不可见时的加载路径是什么？③ 加载后真实调用返回值如何？
+> Trae 那次之所以在这列填了 ✅ 却仍然踩坑，正是因为只测了③、没测①②。
+
 **结论**：
 
-- **首选 WorkBuddy automation**：能力已知、配置最简，但需前置验证「automation 触发的新 agent 进程是否自动加载 `~/.workbuddy/mcp.json`」。
-- **Trae 路线需 spike**：hooks 是事件型（不是定时型），直接套 scheduler 模型不匹配；要么扩展 hooks 框架加「定时触发器」，要么用 launchd 兜底。
+- **首选 WorkBuddy automation**：2026-08-29 21:20 实测端到端通过——定时触发 → `ToolSearch` 加载 3 个工具 → `ToolSearch`/`DeferExecuteTool` 调 `agent_flow_status()` → 返回 `[]` → 判定 idle → 无副作用。
+- **Trae 路线降级为待回测**：不是设计问题，是「Trae 调度会话是否提供等价的工具发现能力」未验证。回测成本 5 分钟（§11）。
 - **Codex 路线必须 spike**：当前没有任何 Codex 自动化机制的一手知识，不应基于假设设计方案。
 
 ---
@@ -101,6 +104,13 @@ Dispatcher 是个 agent 进程，每次触发执行同一个 prompt。**核心�
 若本轮无任何可行动作，回复「idle」即结束，不要多做。
 
 步骤：
+0. 工具获取（必做，不可跳过）：agent_flow_* 是 MCP 工具，可能不在你的初始工具列表里。
+   禁止仅凭"初始工具列表里看不到"就判定工具不存在——这是本任务最常见的失败模式。
+   按序尝试：
+   a. 直接调用 agent_flow_status()（不带参数）。成功则跳到步骤 1。
+   b. 若报"无此工具"，用你可用的工具发现/搜索能力查找含 "agent_flow" 的工具并加载，再重新调用。
+   c. 若仍拿不到，回复「tools unavailable」并列出你尝试过的具体方式，然后结束。
+      不要猜测、不要改文件、不要尝试其他替代手段。
 1. 调用 agent_flow_status()（不带参数），获取所有活跃任务（queued/running/needs_input）。
 2. 对每个 needs_input 任务（单次最多处理 3 个）：
    a. 读该任务 question；需要时可只读 question 指向的 docs/problems/*.md 或相关文件取上下文。
@@ -112,7 +122,24 @@ Dispatcher 是个 agent 进程，每次触发执行同一个 prompt。**核心�
 约束：单次最多 3 个 needs_input；不对同一 task_id 重复 submit；rounds>=3 不代答；不确定就不代答。
 ```
 
-> 注：第 3 条的 `timeout_sec` 依赖 `agent_flow_status` 暴露该字段（§6.3，Plan Task 2 实现）；第 2 条 b 款「rounds>=3 不代答」防调度员错误 token 烧穿 runner 的 `MAX_ROUNDS=5`。本处为唯一权威源，Trae Schedule 的 `message` 全文引用同一文本。
+> 注：第 3 条的 `timeout_sec` 依赖 `agent_flow_status` 暴露该字段（§6.3，Plan Task 2 实现）；第 2 条 b 款「rounds>=3 不代答」防调度员错误 token 烧穿 runner 的 `MAX_ROUNDS=5`。本处为唯一权威源，各派发方的 `message` 全文引用同一文本。
+
+#### 步骤 0 为什么存在（2026-08-29 实测补入）
+
+**步骤 0 是唯一「平台相关」的一步，其余步骤在所有派发方完全一致。**
+
+实测发现：**定时触发的全新会话，初始工具列表里可能没有 `agent_flow_*`**——不是工具不存在，而是需要 agent 主动加载。这是 2026-08-29 Trae 路线失败的表面现象（LLM 报 `No agent_flow_* tools available`），也是 WorkBuddy 探针（automation 触发的新会话）确认的同形现象。
+
+各派发方的差异**只在「怎么加载」**，不在「要不要加载」：
+
+| 派发方 | 初始可见 | 加载方式 | 实测状态 |
+| :--- | :--- | :--- | :--- |
+| WorkBuddy automation | 否 | `ToolSearch(tool_names=["mcp__agent-flow-ex__agent_flow_status", ..._submit, ..._cancel])` → `DeferExecuteTool` | ✅ 已验证（2026-08-29 15:57 探针） |
+| Trae SOLO CN Schedule | 否（据失败现象推断） | **未知**——Trae 是否提供等价的工具发现能力未验证 | ❓ 待验证 |
+
+**因此步骤 0 写成「按序尝试」而非硬编码某个 API**：先直接调、失败再找发现机制、再失败才放弃并如实上报。这样同一份 prompt 在两个平台上都能工作，且即使某个平台完全没有发现机制，调度员也会回报「tools unavailable + 我尝试过什么」，而不是静默地假装工具不存在。
+
+**反模式（务必避免）**：不要写「若看不到 `agent_flow_*` 工具则说明环境有问题，直接结束」——这正是 2026-08-29 那 26 次 tick 全 idle 的行为模式。
 
 ### 4.2 为什么不需要「decision log」
 
@@ -151,20 +178,43 @@ dispatcher（同工作区，可 Read 该文件）→ 读文档 → 组织答案
 
 ## 5. 各派发方实现路径
 
-### 5.1 Trae Schedule（首选，已验证）
+### 5.1 WorkBuddy automation（首选，已验证 2026-08-29）
 
-**前置验证（已完成）**：探测 Schedule 已 `trigger` 实测——新定时会话能加载 `agent_flow_*` MCP 并成功 `agent_flow_status()`（返回 `[]`）。故 v1 派发方定为 Trae Schedule。
+**前置验证（已完成）**：`automation-1788009370311`（一次性）21:20 触发实测——新会话 `ToolSearch` 加载 3 个工具成功，`DeferExecuteTool` 调 `agent_flow_status()` 返回 `[]`，判定 idle、无副作用，run `success=true`。故 v1 派发方定为 WorkBuddy automation。
 
-**5.1.1 调度员 Schedule 配置**
+**5.1.1 调度员 automation 配置**
 
-- `Schedule` `action: create`：
+- `automation_update` `mode: create`：
   - `name`：`agent-flow 调度员`
-  - `cron_expression`：`*/10 * * * *`（每 10 分钟，Trae Schedule 最小粒度）
-  - `timezone`：`Asia/Shanghai`
-  - `message`：§4.1 最终 Prompt 全文（Plan Task 3 落地）
+  - `scheduleType`：`recurring`，`rrule`：`FREQ=MINUTELY;INTERVAL=10`（粒度下限待测）
+  - `cwds`：`/Users/meow/workspace/agent-flow-ex`
+  - `prompt`：§4.1 最终 Prompt 全文
+- **不需要** `connectorIds`：agent-flow-ex 是 user-level 本地 MCP，非 marketplace connector，实测不配置即可用。
 - 每次触发 = 全新会话，无进程内存；调度员状态全部从 store 读取。
 
-**5.1.2 风险与缓解**
+**5.1.2 实测记录（2026-08-29 21:20）**
+
+```
+21:20:27  [SchedulerEngine] Automation is due
+21:20:50  [ConnectorMcpProxy] callTool agent-flow-ex_agent_flow_status args={} → "[]"
+21:21:06  [AutomationService] Run finalized: success=true, outputLen=179
+```
+
+调度员自述：ToolSearch 返回 3 个工具；`status()` 返回 `[]`；本轮 idle，未 submit / 未 cancel / 未写工作区文件。
+
+**5.1.3 附带发现**
+
+- 触发会话由 `--mcp-config` 注入 `connector-proxy`（`defer_loading: true`），agent-flow-ex 三工具以 `agent-flow-ex_agent_flow_*` 名注册，经 `transparent_proxy` 转发。
+- 平台为每次 automation 提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆文件。**v1 不使用**——调度员的所有状态仍从 store 读，保持「prompt 即规约」不变量。
+
+### 5.2 Trae SOLO CN Schedule（备选，待 5 分钟回测）
+
+**配置位置**：MCP server 在 `~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（普通 JSON，可直接编辑）。**该文件的 agent-flow-ex 注册已正确，无需改动。**
+Schedule 存在账号侧/云端，**只能经 Trae UI 的 `Schedule` 工具操作，本地无文件可改**。
+
+命中时**无需改动调度员 prompt**（同为「prompt 即规约」），仅需把 §4.1 Prompt 迁到 Schedule 的 `message`。回测动作见 §11。
+
+**5.2.1 沿用自 v1 的风险与缓解**（派发方无关，两个平台同样适用）
 
 | 风险 | 缓解 |
 | :--- | :--- |
@@ -173,10 +223,6 @@ dispatcher（同工作区，可 Read 该文件）→ 读文档 → 组织答案
 | 调度员误判（猜开放性问题） | 最终 Prompt 明确「方向选择/破坏性/需求歧义/rounds>=3 一律不代答」 |
 | 调度员上下文爆 | 单次最多 3 个 needs_input + prompt ≤ 1k tokens |
 | 孤儿 running 滞留 | 最终 Prompt 规则：`running 且 elapsed_sec > 2×timeout_sec` → `agent_flow_cancel`（依赖 `status` 暴露 `timeout_sec`，§6.3） |
-
-### 5.2 WorkBuddy automation（备选）
-
-能力已知、配置最简，但「automation 触发的新 agent 进程是否自动加载 `~/.workbuddy/mcp.json`」未验证。命中时**无需改动调度员 prompt**（同为「prompt 即规约」），仅需把 §4.1 Prompt 迁到 automation、将 cron 换成其 RRULE/scheduledAt 即可。
 
 ### 5.3 Codex CLI（必须 spike）
 
@@ -203,7 +249,7 @@ dispatcher（同工作区，可 Read 该文件）→ 读文档 → 组织答案
 
 `dispatcher.mjs`：直接 spawn `dist/server.js` 一次，调 `agent_flow_status`，退出。
 
-**代价**：失去 agent 的 LLM 决策能力（没有 prompt 模板，没有「猜答案」环节）—— 退化为「纯轮询器」。**仅兜底**；v1 已选 Trae Schedule，本路线暂不需要。
+**代价**：失去 agent 的 LLM 决策能力（没有 prompt 模板，没有「猜答案」环节）—— 退化为「纯轮询器」。**仅兜底**；v1 已选 WorkBuddy automation，本路线暂不需要。
 
 ---
 
@@ -245,15 +291,15 @@ agent_flow_list_needs_input(): { task_id, question, rounds, elapsed_sec }[]
 
 | 序号 | 验证项 | 状态 |
 | :--- | :--- | :--- |
-| V1 | Trae Schedule 触发的新会话能否加载 `agent_flow_*` MCP 并成功 `agent_flow_status()`？ | ✅ **已完成**（探测 Schedule `trigger` 实测通过，返回 `[]`） |
-| V2 | Schedule 的实际触发间隔（`*/10` 是否 10 分钟守时）？ | 由 Plan Task 4 Step 3（自然 tick）覆盖 |
-| V3 | §4.1 prompt 在调度员会话跑一遍，能否成功调 `agent_flow_status` 无参并返回 idle？ | 由 Plan Task 3 覆盖 |
-| V4 | 制造一个 needs_input 任务，验证调度员自动 `submit(continue_of=)` 续跑成功 | 由 Plan Task 4 覆盖 |
-| V5 | 制造一个孤儿 running 任务（kill runner），验证调度员按 `elapsed_sec > 2×timeout_sec` 自动 cancel | 由 Plan Task 5 覆盖（真实路径：孤儿收割） |
-| V6 | Trae hooks 是否支持「定时触发器」 | 不纳入 v1 候选；v1 已选 Schedule（cron），本项延后 |
+| V1 | 派发方触发的新会话能否拿到 `agent_flow_*` 工具并成功 `agent_flow_status()`？ | ✅ **已完成**（WorkBuddy automation 21:20 端到端实测：ToolSearch 加载 3 工具 → `status()` 返回 `[]` → idle）。Trae 侧 ❌ 27 tick 仅 1 次成功，根因待定 |
+| V2 | 实际触发间隔（10 分钟是否守时）？ | 待 recurring automation 上线后由自然 tick 覆盖 |
+| V3 | §4.1 prompt 在调度员会话跑一遍，能否成功调 `agent_flow_status` 无参并返回 idle？ | ✅ **已完成**（同上，run `success=true`） |
+| V4 | 制造一个 needs_input 任务，验证调度员自动 `submit(continue_of=)` 续跑成功 | ⏸ 待跑 |
+| V5 | 制造一个孤儿 running 任务（kill runner），验证调度员按 `elapsed_sec > 2×timeout_sec` 自动 cancel | ⏸ 待跑 |
+| V6 | Trae hooks 是否支持「定时触发器」 | 不纳入 v1 候选；v1 已选 WorkBuddy automation，本项延后 |
 | V7 | Codex CLI 是否有自动化机制 | 不纳入 v1 候选；无一手知识，延后 spike |
 
-V1 已在任何代码改动前完成；V2—V5 由本实现计划的验收任务（Task 3/4/5）在部署调度员时实测覆盖。V6/V7 不再是 v1 前置门槛。
+V1/V3 已完成；V2 随 recurring 上线覆盖；V4/V5 是**真正的验收项**——目前只证明调度员「能跑起来并正确判定空闲」，还没证明「能自动续跑/收割」。V6/V7 不再是 v1 前置门槛。
 
 ---
 
@@ -298,8 +344,11 @@ V1 已在任何代码改动前完成；V2—V5 由本实现计划的验收任务
 
 ## 11. 待决问题（评审决议）
 
-1. **V1 派发方选型**：**已决议** = Trae Schedule（内置 cron，最小 10 分钟；进程内 MCP 可见性已 `trigger` 实测通过）。WorkBuddy automation 降备选、launchd 仅兜底。
+1. **V1 派发方选型**：**已改决议（2026-08-29）** = **WorkBuddy automation**（端到端实测通过，见 §5.1.2）。Trae Schedule 降备选、launchd 仅兜底。
+   **Trae 回测（5 分钟，未做）**：只把 Schedule `8a989934` 的 `message` 换成带步骤 0 的 §4.1 Prompt 并 `trigger` 一次——通了说明 Trae 也只是延迟加载问题，可迁回；不通再去 UI 开「对话流设置 → 自动运行 MCP」。
+   Trae 侧**无需改动**的项：MCP server 配置（`~/Library/Application Support/TRAE SOLO CN/User/mcp.json`，已正确注册 agent-flow-ex）、agent-flow-ex 代码（0 改动）、调度员 prompt 的其余部分。
 2. **是否采纳 §6.1「聚合查询」新工具**？**已决议** = v1 不采纳，先让调度员直接消费 `agent_flow_status()`；待 v1 跑通后按需再加。
-3. **调度员 prompt 是否需要随 profile 变化**？**已决议** = v1 统一用最终 Prompt（§4.1），不随 profile 变化；调度员用 Trae 自身 runtime，不强制复用 worker profile。
+3. **调度员 prompt 是否需要随 profile 变化**？**已决议** = v1 统一用最终 Prompt（§4.1），不随 profile 变化；调度员用派发方自身 runtime，不强制复用 worker profile。
 4. **「调度员误答」的人兜底**：v1 **不**做「取消续跑/人工接管」按钮。人随时可在会话内直接 `agent_flow_submit(continue_of=)` 抢先，原子 `status=needs_input` 保证后到者返回明确错误。
 5. **超时/孤儿收割依据**：`agent_flow_status` 新增暴露 `timeout_sec`（§6.3，Plan Task 2）；调度员按「running 且 `elapsed_sec > 2×timeout_sec`」cancel。
+6. **是否使用平台的 automation memory（`.workbuddy/automations/<id>/memory.md`）**？**已决议** = v1 不用。调度员状态一律从 store 读，保持「prompt 即规约」与派发方可替换性；引入平台专属记忆会给切换派发方增加隐性依赖。
