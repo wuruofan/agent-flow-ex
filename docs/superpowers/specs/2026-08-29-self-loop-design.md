@@ -207,6 +207,24 @@ dispatcher（同工作区，可 Read 该文件）→ 读文档 → 组织答案
 - 触发会话由 `--mcp-config` 注入 `connector-proxy`（`defer_loading: true`），agent-flow-ex 三工具以 `agent-flow-ex_agent_flow_*` 名注册，经 `transparent_proxy` 转发。
 - 平台为每次 automation 提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆文件。**v1 不使用**——调度员的所有状态仍从 store 读，保持「prompt 即规约」不变量。
 
+**5.1.4 V4 验收：needs_input 自动续跑（2026-08-29 21:43，通过）**
+
+构造：提交 `task_mteffyqz_4af841`，prompt 要求 worker 先以 `❓NEEDS_INPUT:` 问「`config.example.json` 里 `defaults.timeout_sec` 是多少秒」，收到答复后写入 `/tmp/agent-flow-v4-probe.txt`。
+
+结果（全部独立核对，非调度员自述）：
+
+| 项 | 证据 |
+| :--- | :--- |
+| 进入 needs_input | `status` 返回 `needs_input`，`rounds=1`，question 与 result 均为预期文本 |
+| 调度员判定与代答 | 调度员记录：判定为事实类，从工作区文件核实取值 3600，代答并续跑 |
+| 续跑成功 | `rounds` 1 → 2，`status=running` → `completed` |
+| 答案正确 | `cat /tmp/agent-flow-v4-probe.txt` → `timeout_sec=3600`（与 `config.example.json` 一致） |
+| 无副作用 | `git status --short` 为空，仓库未被改动 |
+
+**这次真正证明了什么**：调度员不只是「能跑起来」，而是能完成闭环核心动作——读 question → 判定可答 → 从工作区取证 → 组织答案 → `submit(continue_of=)` → worker 带着答案续跑至完成。
+
+**观察方法注记**：`~/.workbuddy/traces/<pid>/*.json` 不完整（缺 `DeferExecuteTool` 的 span），且触发后不再刷新——**不能用作判成败的依据**。可用的是任务 status 转换、产物文件，以及调度员自己写的 `.workbuddy/automations/<id>/memory.md`。
+
 ### 5.2 Trae SOLO CN Schedule（备选，待 5 分钟回测）
 
 **配置位置**：MCP server 在 `~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（普通 JSON，可直接编辑）。**该文件的 agent-flow-ex 注册已正确，无需改动。**
@@ -294,7 +312,7 @@ agent_flow_list_needs_input(): { task_id, question, rounds, elapsed_sec }[]
 | V1 | 派发方触发的新会话能否拿到 `agent_flow_*` 工具并成功 `agent_flow_status()`？ | ✅ **已完成**（WorkBuddy automation 21:20 端到端实测：ToolSearch 加载 3 工具 → `status()` 返回 `[]` → idle）。Trae 侧 ❌ 27 tick 仅 1 次成功，根因待定 |
 | V2 | 实际触发间隔（10 分钟是否守时）？ | 待 recurring automation 上线后由自然 tick 覆盖 |
 | V3 | §4.1 prompt 在调度员会话跑一遍，能否成功调 `agent_flow_status` 无参并返回 idle？ | ✅ **已完成**（同上，run `success=true`） |
-| V4 | 制造一个 needs_input 任务，验证调度员自动 `submit(continue_of=)` 续跑成功 | ⏸ 待跑 |
+| V4 | 制造一个 needs_input 任务，验证调度员自动 `submit(continue_of=)` 续跑成功 | ✅ **已完成**（2026-08-29 21:43，`task_mteffyqz_4af841`：rounds 1→2，`completed`，见 §5.1.4） |
 | V5 | 制造一个孤儿 running 任务（kill runner），验证调度员按 `elapsed_sec > 2×timeout_sec` 自动 cancel | ⏸ 待跑 |
 | V6 | Trae hooks 是否支持「定时触发器」 | 不纳入 v1 候选；v1 已选 WorkBuddy automation，本项延后 |
 | V7 | Codex CLI 是否有自动化机制 | 不纳入 v1 候选；无一手知识，延后 spike |

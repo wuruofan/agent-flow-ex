@@ -217,7 +217,23 @@ V4（needs_input 自动续跑）、V5（孤儿收割）在当前 prompt 下重�
 - [x] 附带查明：automation 触发会话由 `--mcp-config` 注入 `connector-proxy`（`defer_loading: true`），三工具以 `agent-flow-ex_agent_flow_*` 名注册；平台另提供 `.workbuddy/automations/<id>/memory.md` 跨轮记忆（v1 决议不用，见 spec §11.6）。
 - [x] spec §4.1 加入步骤 0；§3/§5/§7/§11 派发方首选改为 WorkBuddy automation
 
-> **边界**：本次只验证「能跑起来 + 正确判定空闲」。V4（自动续跑）/ V5（孤儿收割）尚未跑，那才是真正的验收项。
+> **边界**：那次只验证「能跑起来 + 正确判定空闲」。V4 已于 21:43 跑通（见下），V5（孤儿收割）待跑。
+
+### 已完成（2026-08-29 21:46）· V4 needs_input 自动续跑 ✅
+
+`task_mteffyqz_4af841`，全部证据独立核对（非调度员自述）：
+
+| 项 | 证据 |
+| :--- | :--- |
+| 进入 needs_input | `needs_input`，`rounds=1`，question 为预期文本 |
+| 调度员代答 | 判定事实类 → 从工作区核实 3600 → `submit(continue_of=)` |
+| 续跑完成 | `rounds` 1→2，`running` → `completed` |
+| 答案正确 | `cat /tmp/agent-flow-v4-probe.txt` → `timeout_sec=3600` |
+| 无副作用 | `git status --short` 为空 |
+
+**判定：WorkBuddy automation 派发方 + 带步骤 0 的 §4.1 Prompt，核心闭环成立。**
+
+**踩坑记录（观察方法）**：`~/.workbuddy/traces/<pid>/*.json` 在触发后即停止刷新，且**缺少 `DeferExecuteTool` 的 span**——我曾据此误判「卡住」。实际 run 早已 finalize。判成败应看任务 status 转换 + 产物文件 + 调度员写的 `memory.md`，不要看 trace。
 
 ### 已完成（2026-08-29 21:00）
 
@@ -227,9 +243,9 @@ V4（needs_input 自动续跑）、V5（孤儿收割）在当前 prompt 下重�
 
 ### 待办
 
-- [ ] spec §4.1 最终 Prompt 加入 Step 0（工具获取，平台无关版）
+- [x] spec §4.1 最终 Prompt 加入 Step 0（工具获取，平台无关版）
 - [ ] **Trae 回测**：`Schedule update` 换 prompt → `trigger` 一次（人在 Trae UI 内执行）
-- [ ] 建 WorkBuddy automation 调度员（RRULE 粒度实测）
-- [ ] 续跑 Task 4/5 验收
+- [ ] 建 recurring WorkBuddy automation 调度员（RRULE 粒度实测，V2 守时验证）
+- [ ] V5 孤儿收割验收（kill runner 进程组 → 等 `elapsed_sec > 2×timeout_sec` → 调度员 cancel）
 - [ ] 修正 spec/trial 中的 Trae MCP 配置路径：`~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（非 `~/.trae-cn/`）
 - [ ] 集成测试 baseline 复跑（沙盒 PATH 缺 `node`，非本任务问题）
