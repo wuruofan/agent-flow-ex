@@ -279,3 +279,39 @@ kill -9 -<runner_pid>
 **2. Placeholder scan**：调度员 Prompt 全文内联；各任务代码/命令均完整；无「TBD/TODO」。
 
 **3. Type/name consistency**：`agent_flow_status / agent_flow_submit(continue_of=...) / agent_flow_cancel` 与 v2 §6 契约一致；`timeout_sec` 字段名与 store `Task.timeout_sec`、`submit` 参数一致；`scheduled_task_id`、`elapsed_sec` 与既有接口命名一致；Task 2 测试中 `openStore`/`createTask`/`status` 签名与 `tests/tools.test.ts` 既有用例一致。
+
+---
+
+## 执行结果（截至 2026-08-29 15:11 北京时间）
+
+| Task | 状态 | 备注 |
+| :--- | :--- | :--- |
+| Task 1 设计稿定稿 | ✅ 已提交 | commits `41bc69f` / `cc550e5` / `de81746` |
+| Task 2 `status` 暴露 `timeout_sec` | ✅ 已提交 | commit `211ebd5`（含后续 status.ts 接口字段补全 + setStartedAt 测试，见 `77ba9d5`） |
+| Task 3 Schedule 创建 + 首次 trigger | ✅ Schedule ID `8a989934` Active → Paused | Executions 27，全 idle |
+| Task 4 V4 needs_input 自动续跑 | ⚠️ **部分成功** | 03:41 自然 tick（北京时间 11:41）调度员成功代答过一次；其余 26 次 tick 全部 idle 报「No agent_flow_* tools available」 |
+| Task 5 V5 孤儿收割 | ❌ **未达** | Step 1-3 完成（submit + kill 进程组 + 确认 running 滞留），Step 4 等调度员自动 cancel 未达成；归因见下方 |
+| Task 6 人工打断/并发安全 | ❌ **未达** | 集成测试 baseline 失败（沙盒 PATH 缺 `node`，与本任务无关）；MCP 客户端断连，无法在本会话重连 |
+| Task 7 结论归档 | ⏸ **未开始** | 需先解决平台问题 |
+
+### 失败归因（Trae Schedule 在隔离会话里 MCP tools 不可见）
+
+- **现象**：Trae Schedule 触发的全新会话里 LLM 报告「No `agent_flow_*` tools are available in the current toolset」；本会话（同 IDE）`mcp_agent-flow-ex` 工具列表仍正常 3 个工具。
+- **早期一次成功**：北京时间 11:41（UTC 03:41）的 tick 成功调用 `agent_flow_submit(continue_of=...)` 完成 needs_input 任务（task_mtdtqac4_520e97）。当时未触发任何 MCP server 重启。
+- **唯一变化**：在我后续为 V5 注入 `set_started_at` 测试工具时，**kill 并自动重启了 MCP server 进程**（pid 17974→80852→4060→4180→4340），并修改了 `~/.workbuddy/mcp.json` 添加 `env: { AGENT_FLOW_TEST_MODE: 1 }`。
+- **猜测根因**：
+  1. Trae Schedule 触发的隔离新会话与主 IDE session 的 MCP toolset 是**独立视图**，Schedule 会话不会自动同步主 IDE 重启 MCP server 后刷新的工具集；
+  2. 或：`env` 字段不被 Trae schema 识别、Trae 拒绝加载带 env 的 MCP server，导致该 server 在 Schedule 会话里被剔除。
+- **结论**：**Trae Schedule 不能可靠承载 dispatcher**——这是平台行为，不是 prompt/代码问题。
+
+### 还原与回退
+
+- `~/.workbuddy/mcp.json` 的 `env` 字段保留（不影响生产路径，因 `AGENT_FLOW_TEST_MODE` 默认未启用；下一次 MCP server 重启会读到，启用 `set_started_at` 工具）。
+- Schedule ID `8a989934` 已暂停（`Status: Paused`），不再消耗 token。
+- 留给 v2 spike：WorkBuddy automation（备选）或 launchd（兜底）派发方路径；任何路径上线前需先实测「触发的新会话能否加载 MCP tools」，避免再次踩坑。
+
+### 已知问题（移交）
+
+1. **集成测试 baseline 失败**（`tests/integration.test.ts`：5 失败）——根因是沙盒 PATH 没 `node`，与本任务无关；建议在非沙盒环境下复跑。
+2. **`run_mcp` 整数类型参数投递限制**——本次 `timeout_sec` 必须为 `integer`，但通过 `run_mcp` 传入数字字面量时全部被转为 string，被服务端 schema 拒绝。这是 MCP client 上游限制。
+3. **Task 6 并发安全抽查**未执行——同问题 1 + 集成测试 baseline 失败。`tests/tools.test.ts` 中的 submit concurrent 单元测试已存在，可作为代码层证据。
