@@ -6,6 +6,8 @@ export interface NotifyOptions {
   delays?: number[];
   /** dry_run=true 时只打印到 stderr，不发 HTTP，直接返回 true（"逻辑成功"）。默认 false。 */
   dryRun?: boolean;
+  /** 单次请求超时 ms；默认 10_000。超时按一次失败计数，走既有重试。 */
+  timeoutMs?: number;
 }
 
 export type FeishuStatus = "needs_input" | "completed" | "failed";
@@ -18,6 +20,10 @@ type FeishuPayload = Record<string, unknown>;
  * 成功判定要求 HTTP 200 且 body.code===0——飞书即便出错也返回 HTTP 200，
  * 失败信息只在响应体 code 字段（如 19021 bot 不在群、19024 关键词缺失、19031 webhook 失效），
  * 只看 res.ok 会把"被拒收"误判为成功、消息静默丢失。
+ *
+ * 每次尝试带 AbortController 超时（默认 10s）：飞书 webhook 偶发慢响应/半开时，
+ * 若无超时单次请求会无限挂起直到 OS TCP 层超时（分钟级），表现就是任务已终态、
+ * 通知还在路上（9/3 实测迟到约 2 分钟）。超时按一次失败计数，走 delays 重试。
  */
 async function post(webhookUrl: string, payload: FeishuPayload, opts: NotifyOptions = {}): Promise<boolean> {
   if (opts.dryRun) {
@@ -26,19 +32,26 @@ async function post(webhookUrl: string, payload: FeishuPayload, opts: NotifyOpti
   }
   const doFetch = opts.fetchImpl ?? fetch;
   const delays = opts.delays ?? [1000, 4000];
+  const timeoutMs = opts.timeoutMs ?? 10_000;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await doFetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal: ctrl.signal,
       });
       const body = (await res.json().catch(() => ({}))) as { code?: number; msg?: string };
       const code = typeof body.code === "number" ? body.code : res.ok ? 0 : -1;
       if (code === 0) return true;
       console.error(`[notifier] feishu rejected: HTTP ${res.status} code=${code} msg=${body.msg ?? ""} (attempt ${attempt}/${MAX_ATTEMPTS})`);
     } catch (e) {
-      console.error(`[notifier] ${e} (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      const reason = e instanceof Error && e.name === "AbortError" ? `timed out after ${timeoutMs}ms` : String(e);
+      console.error(`[notifier] ${reason} (attempt ${attempt}/${MAX_ATTEMPTS})`);
+    } finally {
+      clearTimeout(timer);
     }
     if (attempt < MAX_ATTEMPTS) await sleep(delays[attempt - 1] ?? 4000);
   }

@@ -43,6 +43,39 @@ describe("sendFeishuText", () => {
     expect(ok).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
+  it("times out a hanging request and counts it as a failed attempt (regression: no timeout hung for minutes until TCP layer)", async () => {
+    // fetch stub 永不 resolve，只响应 abort signal——模拟飞书慢响应/半开
+    const fetchMock = vi.fn((_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        (init.signal as AbortSignal).addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      }),
+    );
+    const ok = await sendFeishuText("https://hook/x", "hello", {
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      delays: [0, 0],
+      timeoutMs: 20,
+    });
+    expect(ok).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 3 次全超时 → 放弃
+  });
+  it("succeeds on retry after a timeout", async () => {
+    let call = 0;
+    const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+      if (call++ === 0) {
+        return new Promise<Response>((_resolve, reject) => {
+          (init.signal as AbortSignal).addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ code: 0 }) } as Response);
+    });
+    const ok = await sendFeishuText("https://hook/x", "hello", {
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      delays: [0],
+      timeoutMs: 20,
+    });
+    expect(ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("buildFeishuCard", () => {
