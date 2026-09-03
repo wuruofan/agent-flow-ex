@@ -264,5 +264,11 @@ V4（needs_input 自动续跑）、V5（孤儿收割）在当前 prompt 下重�
    → `cancel`/孤儿收割后，agent 启动的长耗时 shell 命令会继续运行。
    → 本例它自己结束了；换成死循环或长 `sleep` 就是真正的失控进程。
    → 候选修复（待决）：`cancel` 递归遍历子进程树逐个 kill，或让 runner 记录派生 pgid。
+   → **✅ 已修（2026-09-03）**：新增 `src/proc-tree.ts`（`collectDescendants` = ps 快照 ppid BFS；
+     `killTree` = 组杀 + 后代树逐点 SIGTERM → grace 后 SIGKILL 兜底；pid<=0 硬 guard，防 POSIX
+     `kill(0)/kill(-0)` 杀调用方自身进程组）。`src/tools/cancel.ts` 与 `src/runner.ts` 单轮超时路径
+     均改走 `killTree`（超时路径逃逸与 cancel 同源，一并修复）。测试：`tests/proc-tree.test.ts`
+     （真实进程树，含 detached 逃逸孙进程心跳停止断言）+ `tests/integration.test.ts` fake-agent
+     `escape` 模式回归（cancel 后心跳停止，复刻本缺陷原始失败模式）。全套 93 tests 绿。
 - [ ] 修正 spec/trial 中的 Trae MCP 配置路径：`~/Library/Application Support/TRAE SOLO CN/User/mcp.json`（非 `~/.trae-cn/`）
 - [ ] 集成测试 baseline 复跑（沙盒 PATH 缺 `node`，非本任务问题）

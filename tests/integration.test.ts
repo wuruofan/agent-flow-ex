@@ -10,7 +10,7 @@
 //   用 Node + script 时会让 argv 边界出问题（独立可执行无此问题）。
 // - FAKE_MODE & FAKE_PIDFILE 通过 profile.env 传到 agent 子进程。
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,7 @@ import { submit } from "../src/tools/submit.js";
 import { status } from "../src/tools/status.js";
 import { cancel } from "../src/tools/cancel.js";
 import { openStore } from "../src/store.js";
+import { killTree } from "../src/proc-tree.js";
 
 let home: string;
 let fakeAgent: string;
@@ -47,6 +48,22 @@ if (process.env.FAKE_PIDFILE) {
 if (mode === "hang") {
   emit({ type: "system", subtype: "init", session_id: "sid-hang-" + process.pid });
   // 响应 SIGTERM/SIGKILL 才能让 runner 的 timeout 信号真正杀进程
+  process.on("SIGTERM", () => process.exit(0));
+  process.on("SIGINT", () => process.exit(0));
+  setInterval(() => {}, 1000);
+} else if (mode === "escape") {
+  // P0-2 逃逸场景：agent 派生 detached 心跳子进程（脱离 runner 进程组，模拟 agent Bash 工具的
+  // 逃逸长命令），自身 hang 等待 cancel。修复前 cancel 杀不掉该子进程，心跳文件持续增长。
+  emit({ type: "system", subtype: "init", session_id: "sid-esc-" + process.pid });
+  const { spawn } = require("node:child_process");
+  const hbChild = spawn(process.execPath, ["-e", \`
+    const fs = require("node:fs");
+    let i = 0;
+    const t = setInterval(() => { fs.appendFileSync(process.env.HB_PATH, i++ + "\\\\n"); }, 50);
+    process.on("SIGTERM", () => process.exit(0));
+  \`], { detached: true, env: { ...process.env, HB_PATH: process.env.FAKE_HB }, stdio: "ignore" });
+  hbChild.unref();
+  try { require("node:fs").writeFileSync(process.env.FAKE_HB_PIDFILE, String(hbChild.pid)); } catch {}
   process.on("SIGTERM", () => process.exit(0));
   process.on("SIGINT", () => process.exit(0));
   setInterval(() => {}, 1000);
@@ -83,6 +100,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // 兜底清理：escape 测试若失败可能残留 detached 心跳子进程，按 pidfile 追杀
+  const hbPidfile = join(home, "hb-child.pid");
+  try {
+    if (existsSync(hbPidfile)) {
+      const pid = Number(readFileSync(hbPidfile, "utf8"));
+      if (pid > 0) killTree(pid);
+    }
+  } catch { /* 清理失败不阻断 */ }
   if (existsSync(home)) rmSync(home, { recursive: true, force: true });
   delete process.env.AGENT_FLOW_HOME;
   delete process.env.AGENT_FLOW_RUNNER;
@@ -108,6 +133,20 @@ async function waitForPidfile(path: string, timeoutMs = 4_000): Promise<number> 
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`timeout waiting pidfile: ${path}`);
+}
+
+function hbLines(path: string): number {
+  if (!existsSync(path)) return 0;
+  return readFileSync(path, "utf8").split("\n").filter(Boolean).length;
+}
+
+async function waitForHbLines(path: string, min: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (hbLines(path) >= min) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`timeout waiting heartbeat lines >= ${min}: ${path}`);
 }
 
 suite("integration: full task lifecycle", () => {
@@ -142,6 +181,39 @@ suite("integration: cancel cascades to agent process", () => {
     // 确认任务确实处于 cancelled 而非别的
     expect((openStore(join(home, "tasks.db")).getTask(id) as { status: string }).status).toBe("cancelled");
   }, 10_000);
+});
+
+suite("integration: cancel kills escaped descendant process", () => {
+  it("detached heartbeat spawned by agent stops after cancel (P0-2 regression)", async () => {
+    const pidfile = join(home, "agent.pid");
+    const hbChildPidfile = join(home, "hb-child.pid");
+    const hb = join(home, "hb.txt");
+    setupHome({
+      FAKE_MODE: "escape", FAKE_PIDFILE: pidfile,
+      FAKE_HB: hb, FAKE_HB_PIDFILE: hbChildPidfile,
+    });
+    const r = await submit({ prompt: "escape", project_path: home });
+    const id = (r as { task_id: string }).task_id;
+    await waitForPidfile(pidfile);
+    const hbChildPid = await waitForPidfile(hbChildPidfile);
+    // 心跳进程活着且正在写文件
+    await waitForHbLines(hb, 1);
+    expect(() => process.kill(hbChildPid, 0)).not.toThrow();
+
+    // cancel → killTree：进程组 + 逃逸后代树都应被清
+    expect(cancel({ task_id: id })).toMatchObject({ status: "cancelled" });
+    await new Promise((res) => setTimeout(res, 500));
+
+    // 修复核心断言：逃逸的 detached 心跳子进程必须死（旧实现会继续跑）
+    let childAlive: "alive" | "dead" = "dead";
+    try { process.kill(hbChildPid, 0); childAlive = "alive"; } catch { /* dead */ }
+    expect(childAlive).toBe("dead");
+    // 心跳文件停止增长
+    const linesAtStop = hbLines(hb);
+    await new Promise((res) => setTimeout(res, 700));
+    expect(hbLines(hb)).toBe(linesAtStop);
+    expect((openStore(join(home, "tasks.db")).getTask(id) as { status: string }).status).toBe("cancelled");
+  }, 15_000);
 });
 
 suite("integration: timeout kills long-running agent", () => {

@@ -12,9 +12,9 @@ import { buildAgentEnv } from "./agent-env.js";
 import { wrapInitialPrompt, wrapContinuePrompt, extractNeedsInput } from "./prompt.js";
 import { sendFeishuCard, buildFeishuCard } from "./notifier.js";
 import { dbPath } from "./paths.js";
+import { killTree } from "./proc-tree.js";
 
 const MAX_ROUNDS = 5;
-const KILL_GRACE_MS = 3000;
 const NOTIFY_GRACE_MS = 1500; // SIGTERM 后给通知 promise 的最长等待时间
 const MAX_RESULT_LEN = 4000;
 
@@ -55,7 +55,8 @@ async function main(): Promise<void> {
   const log = createWriteStream(task.log_path, { flags: "a" });
 
   const args = executor.buildCommand(executorCfg.bin, executorCfg.extra_flags ?? [], task.session_id ?? undefined);
-  // 不设 detached：让 agent 继承 runner 的进程组（runner 自己是 leader），便于 cancel 时 kill(-runnerPid) 级联到 agent。
+  // 不设 detached：让 agent 继承 runner 的进程组（runner 自己是 leader），便于 cancel 时组杀级联到 agent。
+  // 注意：agent 的 Bash 工具可能派生出逃出该组的子进程（见 proc-tree.ts），cancel/timeout 用 killTree 兜底。
   const child: ChildProcess = spawn(executorCfg.bin, args, {
     cwd: task.project_path,
     env: buildAgentEnv(executorCfg.bin, profileEnv),
@@ -65,7 +66,7 @@ async function main(): Promise<void> {
   child.stdin!.write(prompt);
   child.stdin!.end();
 
-  // cancel 场景：server kill(-runnerPid)。agent 与 runner 同进程组，会随 runner 一起被 SIGTERM，无需单独再杀。
+  // cancel 场景：server 端 killTree(runnerPid)（组杀 runner + agent；逃逸子进程靠 ppid 快照补杀）。
   // 先等 final 通知最多 NOTIFY_GRACE_MS 完成再退出，避免截断导致 notify_failed 未标。
   process.on("SIGTERM", () => {
     if (pendingNotify) {
@@ -77,14 +78,15 @@ async function main(): Promise<void> {
     process.exit(0);
   });
 
-  // 每轮超时：给 agent 发 SIGTERM → 3s 后 SIGKILL。agent 退出后 child.close 触发，
+  // 每轮超时：killTree(child.pid) 给 agent 发 SIGTERM（含其后代树，覆盖 agent Bash 工具逃出进程组的
+  // 长命令子进程），3s 后未驯服者自动补 SIGKILL（killTree 内部兜底）。agent 退出后 child.close 触发，
   // finalize 走 timedOut 分支并标 failed（task 转 failed + pendingNotify 落库）。
-  // 注意：避免 kill(-process.pid) 给整个进程组——那会让 runner 自己 SIGTERM 跳过 child.close 处理。
+  // 注意：避免 kill(-process.pid) 给整个进程组——那会让 runner 自己 SIGTERM 跳过 child.close 处理；
+  // killTree 只从 child.pid 向下清，不动 runner 所在的组根。
   let timedOut = false;
   const timeoutTimer = setTimeout(() => {
     timedOut = true;
-    try { if (child.pid !== undefined) process.kill(child.pid, "SIGTERM"); } catch { /* already dead */ }
-    setTimeout(() => { try { if (child.pid !== undefined) process.kill(child.pid, "SIGKILL"); } catch { /* already dead */ } }, KILL_GRACE_MS).unref();
+    if (child.pid !== undefined) killTree(child.pid);
   }, task.timeout_sec * 1000);
   timeoutTimer.unref();
 
