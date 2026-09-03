@@ -63,6 +63,12 @@ async function main(): Promise<void> {
 
   await server.connect(new StdioServerTransport());
   console.error("[agent-flow-ex] mcp server ready (stdio)");
+
+  // stdin EOF = MCP client 断开（会话结束）。SDK 的 StdioServerTransport 在 stdin end 时
+  // 只 close（off 掉 data listener）不强制退出；host 复用常驻进程 + 懒加载 spawn 新会话时，
+  // 旧 server 的事件循环仍非空 → 永久挂起成残留（实测观察到多个跨日残留 server 的 fd0 仍连活 pipe）。
+  // 显式退出让"客户端断管道"的 server 能自愈回收。server 无状态（状态全在 tasks.db），exit 安全。
+  process.stdin.on("end", () => process.exit(0));
 }
 
 const sub = process.argv[2];
