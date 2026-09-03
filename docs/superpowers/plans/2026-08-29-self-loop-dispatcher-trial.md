@@ -86,21 +86,36 @@
   2. `~/.trae-cn/mcps/` ≠ MCP 注册表；注册表在 `~/Library/Application Support/TRAE SOLO CN/User/mcp.json`。调度员第一次诊断据此下错了结论。
   3. `Trae Schedule 隔离会话的可见工具集 ≠ 主 IDE 工具集 ≠ Exec 沙盒视图`，但都是 Trae **同一份 MCP 注册表**驱动的；只要 MCP server 在跑，Schedule 会话也能看到工具（与工作目录、用户权限解耦）。
 
-### 4.1 真实根因（终稿，2026-08-29 15:18 北京时间）
+### 4.1 真实根因（终稿，2026-08-29 15:30 北京时间 ·WorkBuddy 对照实验定性）
 
-- `agent-flow-ex` MCP server **一直健康运行**，从未离开主 IDE 会话的视图。
-- Trae Schedule 隔离会话**不会同步主 IDE 的 MCP toolset**——这是 Trae 平台的会话隔离设计，不是配置问题、不是 prompt 问题、也不是 MCP server 自身的健康问题。
-- 「重启 MCP server 让 Schedule 会话重新看到」**是无意义动作**——MCP server 从未断过；就算它重启一万次，Schedule 隔离会话也不会因此加载它。
-- `mcp-servers-host.log` 在 11:56:19 出现的 `MCPClient#onClose / Disconnected` 是 MCP server 进程被 kill 一次的孤立事件，主 IDE 早已自愈并继续 `Got tools`，与 Schedule 会话看到的现象无因果关系。
+WorkBuddy 调研把假说区分干净了：
+
+| 时间 | 事件 |
+| :--- | :--- |
+| 11:51:25 | Trae + WorkBuddy 最后一次成功调 MCP |
+| **11:56:19** | 我们为注入 V5 测试工具 `kill` MCP server 进程 |
+| 11:56:19 | **两个平台的客户端同时掉线** |
+| **11:56:21** | **WorkBuddy 自动重连 ✅ (+1.3s)**，当天还重连了 3 次 |
+| **11:56:21+** | **Trae 无任何动作 ❌** |
+| 11:57:09 | Trae 第一次失败（Schedule 隔离会话：`Extension not found`） |
+| 之后 11 小时 | Trae 零成功；主 IDE 仍显示3 工具 = **缓存** |
+
+**结论**：Trae MCP 客户端**没有自动重连机制**，是平台设计层面的缺陷。**与以下任何一项都无关**：
+- MCP 注册表 / mcp.json 配置（一直正确）
+- 「自动运行 MCP」开关（render.log `enabled:true` 恒为真）
+- Schedule prompt（与 WorkBuddy 路线同源）
+- 用户操作（杀进程是必要操作注入 V5 测试工具）
+
+重启 Trae **不能根除**——下次 MCP server 再掉线（比如 V5/V6 测试再注入工具、机器休眠恢复、进程被 OOM kill），Trae 仍会再次僵死。**Trae Schedule v1 不可承载 dispatcher**。
 
 ### 4.2 结论
 
-**Trae Schedule 路线 v1 出局**——不要在这条路上再花时间。需要 10 分钟粒度按 spec §5.4 走 launchd 兜底（spawn `dist/server.js` 一次调 `agent_flow_status` 退出，纯轮询器、无 LLM 决策能力）。
+**Trae Schedule 路线 v1 出局，不再修复**。需要 10 分钟粒度按 spec §5.4 走 launchd 兜底（spawn `dist/server.js` 一次调 `agent_flow_status` 退出，纯轮询器、无 LLM 决策能力）。
 
 ### 4.3 WorkBuddy 路线已全绿（V1–V5）
 
 - 1 小时粒度；如不满足延迟需求再考虑 launchd。
-- WorkBuddy 的 `connector-proxy` 自带 MCP 工具发现机制，所以走通。
+- WorkBuddy 的 `connector-proxy` 自带 MCP 工具发现 + 自动重连，所以走通且稳定。
 - **WorkBuddy automation**（备选，v2 spec 已用）：先实测「automation 触发的新 agent 进程是否自动加载 `~/.workbuddy/mcp.json`」，通过则把 §4.1 最终 Prompt 迁过去、cron 换成 RRULE/scheduledAt。
 - **launchd / cron**（兜底）：写 `dispatcher.mjs` 直接 spawn `dist/server.js` 一次调 `agent_flow_status` 退出。**代价**：失去 LLM 决策（退化为纯轮询器）。
 

@@ -13,6 +13,8 @@
 
 **修复动作**：强制 Trae 重连（MCP 面板 disable → re-enable `agent-flow-ex`，或退出重启 Trae）。
 
+> 精修：所谓「不重连」是指**同一客户端在 server 断连后不会自愈重连**；但**整进程退出重启会拉起全新客户端，必能重连**。2026-08-30 已实测验证，见 §9。
+
 ---
 
 ## 2. 为什么是 `docs/diagnostics/` 而不是 `docs/debug/`，也不放在 `superpowers/` 下
@@ -179,3 +181,50 @@ printf '%s\n%s\n%s\n' \
 → 返回 `[]`，无需 MCP 客户端。**技术上已验证可行。**
 
 **不采用**：它会让 Trae 版 prompt 与 WorkBuddy 版分叉，破坏「prompt 即规约 / 派发方可替换」这条不变量。真到需要时，更干净的是 spec §5.4 的 launchd 路线（不污染 prompt）。
+
+---
+
+## 9. 2026-08-30 实测验证：整进程重启后 MCP 自愈
+
+**背景**：08-29 23:00 起 Trae 被我方（WorkBuddy 会话）强制关闭并清理了陈旧单例锁（`code.lock` / `1.10-main.sock`）；用户于 08-30 12:06 通过 Trae 内置 Claude 把 `TRAE SOLO CN` 重新拉起（新主进程 pid 43103，新建会话目录 `logs/20260830T120651`）。
+
+**验证目标**：确认 §1 的「退出重启 Trae」修复路径确实能让 MCP 客户端重连（即楔死自愈），而非像 11:56:19 之后那样永久断裂。
+
+**证据**：`logs/20260830T120651/window1/exthost/mcp-servers-host.log` 尾部
+
+```
+12:07:13  MCPServerManager#start Connecting with config...
+          node /Users/meow/workspace/agent-flow-ex/dist/server.js
+12:07:15  [Server Internal Log] mcp server ready (stdio)
+12:07:15  MCPServerManager#listTools Got tools:
+          agent_flow_submit, agent_flow_status, agent_flow_cancel
+12:07:15  MCPServerManager#start Connected.
+```
+
+**结论**：
+- 全新会话的 MCP 客户端在 `12:07:15` 干净重连，`agent_flow` 3 个工具全部可见 → **11:56:19 断连楔死经一次彻底重启后已自愈**。
+- 与 §3.3 的判断一致：WorkBuddy 客户端是「断连即自愈重连」，Trae 是「同一客户端断连不自愈，但整进程重启可恢复」。运维含义不变——**Trae 侧 MCP 一旦楔死，退出重启 Trae 即可，无需动配置**。
+- 注意：本次重启前我们删掉的 `code.lock` / `1.10-main.sock` 为干净重启扫清了残留单例状态，但即便不删，正常 `open -a` 拉起通常也会重建；该清理属锦上添花，非必需。
+
+---
+
+## 10. 2026-08-31 复现验证：同一客户端 server 断连仍不重连（楔死）
+
+**背景**：用户给 Trae 的「自动执行」开了全部权限，想验证 MCP 重连行为是否改善。需厘清一个常见误解——**自动化权限与 MCP 客户端重连是两件独立的事**：权限决定「自动化能否调用工具」，重连是「客户端断连后是否自愈」的底层实现，开权限不会让客户端自愈。
+
+**方法**：`kill -9` 杀掉 Trae 专属的 MCP server 进程 `77352`（父链 `77352 → 75882 Trae Plugin Helper → 73348 Trae Electron`），WorkBuddy 的 server `77504`（父链指向 WorkBuddy Electron）**不动**。杀后观察 host 日志 60s。
+
+**证据**：session `20260830T193131/window1/exthost/mcp-servers-host.log`
+
+```
+09:41:19  MCPClient#onClose
+09:41:19  MCPServerManager#onClose Disconnected.
+          (此后 60s 内无任何 Connecting / Connected)
+```
+
+统计：`Connecting` 次数仍为 1（仅 19:32 基线那次）、`Connected` 1 次、新增 `Disconnect/onClose` 2 次（即本次 onClose + Disconnected）。**零重连**。
+
+**结论**：
+- Trae 同一 MCP 客户端在 server 进程被 kill 后**不自愈重连**，彻底楔死——与 08-29 §1 结论完全一致，开了自动执行权限也无变化。
+- 恢复手段不变：手动重启 Trae（见 §9，锁已清，必自愈）。WorkBuddy 侧 server 不受影响，其客户端断连即自愈。
+- 运维含义固化：**Trae 做派发方时，MCP 是一处单点故障——server 一旦崩溃，Trae 侧工具静默失效直到人工重启 IDE**；WorkBuddy 无此问题。这也是 §5.4 / spec 倾向 WorkBuddy 派发方（或 launchd 独立常驻 server）的核心理由。
