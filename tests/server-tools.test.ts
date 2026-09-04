@@ -54,15 +54,21 @@ function listTools(extra: Record<string, string>): Promise<string[]> {
 }
 
 describe("MCP server tool registration", () => {
-  it("registers the 3 production tools and no test helper", async () => {
+  it("registers the 5 production tools and no test helper", async () => {
     const names = (await listTools({ AGENT_FLOW_TEST_MODE: "0" })).sort();
-    expect(names).toEqual(["agent_flow_cancel", "agent_flow_status", "agent_flow_submit"]);
+    expect(names).toEqual([
+      "agent_flow_cancel",
+      "agent_flow_restart",
+      "agent_flow_status",
+      "agent_flow_submit",
+      "agent_flow_version",
+    ]);
   }, 30000);
 
   it("registers set_started_at exactly once when test mode is on", async () => {
     const names = await listTools({ AGENT_FLOW_TEST_MODE: "1" });
     expect(names.filter((n) => n === "agent_flow_set_started_at")).toHaveLength(1);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(4);
+    expect(names).toHaveLength(6);
   }, 30000);
 });

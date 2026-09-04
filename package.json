@@ -10,7 +10,7 @@
     "agent-flow-ex": "dist/server.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/gen-build-meta.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "pretest:integration": "npm run build",

@@ -4,6 +4,8 @@ import { z } from "zod";
 import { submit } from "./tools/submit.js";
 import { status } from "./tools/status.js";
 import { cancel } from "./tools/cancel.js";
+import { version } from "./tools/version.js";
+import { restart } from "./tools/restart.js";
 import { setStartedAt, isTestMode } from "./tools/test-helpers.js";
 import { ensureRuntimeDirs } from "./paths.js";
 import { loadEnvFile } from "./env-file.js";
@@ -47,6 +49,22 @@ async function main(): Promise<void> {
     "取消任务（状态感知、幂等）：running 杀整个进程组；已终态则原样返回当前状态。",
     { task_id: z.string().describe("任务 id") },
     async (args) => json(cancel(args))
+  );
+
+  server.tool(
+    "agent_flow_version",
+    ["返回当前 MCP server 构建元数据（version / gitSha / buildTime），用于确认重启后新代码已生效。",
+      "构建信息缺失时返回 unknown。"].join("\n"),
+    {},
+    async () => json(version()),
+  );
+
+  server.tool(
+    "agent_flow_restart",
+    ["主动重启当前 MCP server 进程（process.exit，由 host 自动 respawn 并加载当前 dist）。",
+      "server 无状态、in-flight worker 在独立进程组，重启安全；只重启调用方这条连接，不影响其他 live server 或在跑任务。"].join("\n"),
+    {},
+    async () => json(restart()),
   );
 
   if (isTestMode()) {
