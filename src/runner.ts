@@ -96,6 +96,9 @@ async function main(): Promise<void> {
   let resultIsError = false;
   let stderrTail = "";
   const files = new Set<string>(task.files_changed ?? []);
+  // 2026-09-03：配额/限流告警单任务只推一次（任务级去重，不依赖 DB 字段）。
+  // runner 崩了 SIGTERM 整体收尾不再触发告警，故无需持久化。
+  let quotaWarned = false;
 
   const rl = createInterface({ input: child.stdout! });
   rl.on("line", (line) => {
@@ -111,6 +114,11 @@ async function main(): Promise<void> {
     }
     if (ev.assistantText) lastAssistantText = ev.assistantText;
     if (ev.result) { resultText = ev.result.text; resultIsError = ev.result.isError; }
+    // 配额告警：识别到首个 429 / 硬配额信号时立即推一张 ⚠️ 卡，不再静默等终态。
+    if (ev.quotaWarning && !quotaWarned) {
+      quotaWarned = true;
+      pushQuotaWarning(cfg, task.id, ev.quotaWarning);
+    }
     if (Object.keys(patch).length) store.patch(taskId, patch);
   });
   child.stderr!.on("data", (d: Buffer) => {
@@ -175,6 +183,29 @@ function readRoundInput(logPath: string, round: number): string | null {
 
 function trunc(s: string, max = MAX_RESULT_LEN): string {
   return s.length > max ? s.slice(0, max) + "…(truncated)" : s;
+}
+
+/**
+ * 中途配额/限流告警推送：复用 finalize 的 webhook/env 解析路径，独立 fire-and-forget。
+ * 不阻塞事件循环；不修改任务状态（任务还在跑）；不进入 pendingNotify（避免被 SIGTERM 截断）。
+ * 唯一去重由 runner 主循环的 quotaWarned 局部标志保证（同任务只触发一次）。
+ */
+function pushQuotaWarning(
+  cfg: Awaited<ReturnType<typeof loadConfig>>,
+  taskId: string,
+  q: { status?: number; message: string; attempt?: number },
+): void {
+  const dryRun = cfg.notify.dry_run ?? true;
+  const webhook = dryRun ? cfg.notify.feishu_webhook_url
+    : resolveEnvPlaceholders({ url: cfg.notify.feishu_webhook_url }).url;
+  const parts: string[] = [];
+  if (typeof q.status === "number") parts.push(`**状态码**：\`${q.status}\``);
+  if (typeof q.attempt === "number") parts.push(`**重试次数**：${q.attempt}`);
+  parts.push(`worker 触发配额/限流信号，正在重试；持续下去任务大概率失败，会自动推送终态卡片。`);
+  if (q.message) parts.push(`\n> ${q.message}`);
+  const detail = parts.join("\n\n");
+  sendFeishuCard(webhook, buildFeishuCard("quota_warning", taskId, detail, cfg.notify.keyword), { dryRun })
+    .catch((e) => { console.error("[quota-warn] unexpected:", e); });
 }
 
 main().catch((e) => { console.error("[runner] fatal:", e); process.exit(1); });

@@ -35,6 +35,24 @@ describe("claude executor", () => {
     const err = ex.parseEvent(lines[9]);
     expect(err?.result?.isError).toBe(true);
   });
+  // 2026-09-03：识别 429 / 硬配额信号，让 runner 触发即时告警推送
+  it("detects 429 retry as quotaWarning (status + attempt + message)", () => {
+    const ev = ex.parseEvent(lines[11]);
+    expect(ev?.quotaWarning).toEqual({ status: 429, message: "Rate limit reached", attempt: 3 });
+  });
+  it("detects hard 'Token Plan 用量上限' message via Chinese keyword", () => {
+    const ev = ex.parseEvent(lines[12]);
+    expect(ev?.quotaWarning?.status).toBe(429);
+    expect(ev?.quotaWarning?.message).toContain("Token Plan 用量上限");
+  });
+  it("detects quota from English message even without explicit status field", () => {
+    const ev = ex.parseEvent(lines[13]);
+    expect(ev?.quotaWarning?.message).toContain("quota exceeded");
+  });
+  it("ignores non-quota api_retry (500 / transient) — no false positive", () => {
+    expect(ex.parseEvent(lines[14])?.quotaWarning).toBeUndefined();
+    expect(ex.parseEvent(lines[15])?.quotaWarning).toBeUndefined();
+  });
   it("builds first-run and resume commands; prompt always via stdin", () => {
     const first = ex.buildCommand("/bin/claude", ["--dangerously-skip-permissions"]);
     expect(first).toEqual(["/bin/claude", "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"]);

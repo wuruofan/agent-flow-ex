@@ -44,6 +44,29 @@ export const claudeExecutor: Executor = {
         },
       };
     }
+    // 2026-09-03：识别 CLI 重试/报错流中的 429 / 配额信号，让 runner 立即推告警卡而非等到 38min 后终态。
+    // 触发条件：subtype 是 api_retry 或 api_error，且 error_status===429，或消息含硬配额关键词。
+    // 注意：parseEvent 是纯函数，不做"已告警"去重——交给 runner 进程的局部标志处理，避免 schema 变更。
+    if (o.type === "system" && (o.subtype === "api_retry" || o.subtype === "api_error")) {
+      const errStatus = typeof o.error_status === "number" ? o.error_status
+        : typeof o.status === "number" ? o.status
+          : undefined;
+      const rawMsg = typeof o.error === "string" ? o.error
+        : typeof o.message === "string" ? o.message
+          : typeof o.error_message === "string" ? o.error_message
+            : "";
+      const isHardQuota = errStatus === 429
+        || /token plan|quota|用量上限|rate.?limit|exceeded/i.test(rawMsg);
+      if (isHardQuota) {
+        return {
+          quotaWarning: {
+            status: errStatus,
+            message: rawMsg.slice(0, 400),
+            attempt: typeof o.attempt === "number" ? o.attempt : undefined,
+          },
+        };
+      }
+    }
     return null;
   },
 };

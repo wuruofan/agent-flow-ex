@@ -10,7 +10,7 @@ export interface NotifyOptions {
   timeoutMs?: number;
 }
 
-export type FeishuStatus = "needs_input" | "completed" | "failed";
+export type FeishuStatus = "needs_input" | "completed" | "failed" | "quota_warning";
 
 /** 飞书自定义机器人消息负载（text / interactive 共用通用发送）。 */
 type FeishuPayload = Record<string, unknown>;
@@ -69,13 +69,20 @@ export async function sendFeishuCard(webhookUrl: string, card: Record<string, un
 }
 
 /**
- * 构建飞书交互卡片：去掉 header 大色块横幅（太抢眼），改用正文首行「emoji + 加粗状态」
- * 引导（emoji 自带颜色：✅绿/❌红/❓蓝），下方接任务ID与 markdown 详情（lark_md 渲染）。
- * keyword 放进 footer 的 note（灰色小字），既满足机器人「关键词」安全闸门又不干扰正文；
- * 缺省时不加 note。
+ * 构建飞书交互卡片（JSON 2.0 schema）。
  *
- * 注：自定义机器人卡片 schema 不支持 `tag` 元素（实测 11310 unsupported type of block），
- * 故状态色用 emoji 而非彩色 pill 表达。
+ * 2026-09-03 自 1.0 迁移：1.0 的 lark_md（div/text 元素）只支持 Markdown 子集
+ * （粗体/斜体/删除线/链接等），# 标题 与 | 表格 | 均不渲染——官方明确标题/引用/表格
+ * 语法仅 JSON 2.0 富文本组件支持。2.0 顶层为 schema/body.elements，正文用 tag=markdown
+ * 组件（非 1.0 的 div/text/lark_md），content 支持完整 GFM（标题 1-6 级、表格、引用、列表）。
+ *
+ * 视觉保持与 1.0 一致：无 header 大色块横幅（太抢眼），首行「emoji + 加粗状态」引导
+ * （emoji 自带颜色：✅绿/❌红/❓蓝），下方接任务ID与 markdown 详情（worker 返回原文）。
+ * keyword 进「关键词」安全闸门：2.0 组件清单已移除 1.0 的 note 组件，改用 markdown 组件
+ * text_size=notation（12px 辅助信息灰字）置于正文后，效果等价；缺省时不加。
+ *
+ * 注：2.0 卡片要求飞书客户端 ≥7.20（低版本展示升级提示兜底文案）；config 不再支持
+ * 1.0 的 wide_screen_mode，宽度由 width_mode 控制（默认即 600px 宽版），故省略 config。
  */
 export function buildFeishuCard(
   status: FeishuStatus,
@@ -83,15 +90,15 @@ export function buildFeishuCard(
   detail: string,
   keyword?: string,
 ): Record<string, unknown> {
-  const statusEmoji = { needs_input: "❓", completed: "✅", failed: "❌" }[status];
-  const statusText = { needs_input: "需要输入", completed: "任务完成", failed: "任务失败" }[status];
+  const statusEmoji = { needs_input: "❓", completed: "✅", failed: "❌", quota_warning: "⚠️" }[status];
+  const statusText = { needs_input: "需要输入", completed: "任务完成", failed: "任务失败", quota_warning: "配额告警" }[status];
   const elements: Record<string, unknown>[] = [
-    { tag: "div", text: { tag: "lark_md", content: `${statusEmoji} **${statusText}**\n\n**任务ID**：\`${taskId}\`\n\n${detail}` } },
+    { tag: "markdown", content: `${statusEmoji} **${statusText}**\n\n**任务ID**：\`${taskId}\`\n\n${detail}` },
   ];
-  if (keyword) elements.push({ tag: "note", elements: [{ tag: "plain_text", content: keyword }] });
+  if (keyword) elements.push({ tag: "markdown", text_size: "notation", content: keyword });
   return {
-    config: { wide_screen_mode: true },
-    elements,
+    schema: "2.0",
+    body: { elements },
   };
 }
 

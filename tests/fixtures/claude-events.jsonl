@@ -9,3 +9,8 @@
 {"type":"result","subtype":"success","session_id":"s2","result":"DONE","is_error":false,"total_cost_usd":0.001}
 {"type":"result","subtype":"error_during_execution","session_id":"s3","result":null,"is_error":true}
 not-json-line
+{"type":"system","subtype":"api_retry","session_id":"s4","error_status":429,"attempt":3,"error":"Rate limit reached"}
+{"type":"system","subtype":"api_retry","session_id":"s5","error_status":429,"attempt":1,"error":"API Error: Request rejected (429) · 当前已达到 Token Plan 用量上限，请明日再试或升级套餐"}
+{"type":"system","subtype":"api_retry","session_id":"s6","attempt":2,"error":"anthropic: quota exceeded for tier"}
+{"type":"system","subtype":"api_error","session_id":"s7","status":500,"error":"Internal server error"}
+{"type":"system","subtype":"api_retry","session_id":"s8","attempt":1,"error":"Transient connection issue"}

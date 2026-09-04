@@ -79,28 +79,44 @@ describe("sendFeishuText", () => {
 });
 
 describe("buildFeishuCard", () => {
-  it("is an interactive card with no big colored header; status shown as emoji + bold line, markdown body", () => {
+  it("is a JSON 2.0 card with no colored header; status as emoji + bold line, full-markdown body", () => {
     const card = buildFeishuCard("completed", "task_abc", "done") as Record<string, any>;
+    expect(card.schema).toBe("2.0");
     expect(card.header).toBeUndefined();
-    const div = card.elements[0] as Record<string, any>;
-    expect(div.tag).toBe("div");
-    expect(div.text.tag).toBe("lark_md");
-    expect(div.text.content).toContain("✅ **任务完成**");
-    expect(div.text.content).toContain("task_abc");
-    expect(div.text.content).toContain("done");
+    const md = card.body.elements[0] as Record<string, any>;
+    expect(md.tag).toBe("markdown");
+    expect(md.content).toContain("✅ **任务完成**");
+    expect(md.content).toContain("task_abc");
+    expect(md.content).toContain("done");
+  });
+  it("keeps headings and table syntax intact in the body (regression: 1.0 lark_md dropped both)", () => {
+    const detail = "# 报告标题\n\n| A | B |\n|---|---|\n| 1 | 2 |";
+    const md = (buildFeishuCard("completed", "t", detail) as Record<string, any>).body.elements[0];
+    expect(md.content).toContain("# 报告标题");
+    expect(md.content).toContain("| A | B |");
   });
   it("uses ❓/❌ emoji for needs_input/failed", () => {
-    expect((buildFeishuCard("needs_input", "t", "d") as Record<string, any>).elements[0].text.content).toContain("❓ **需要输入**");
-    expect((buildFeishuCard("failed", "t", "d") as Record<string, any>).elements[0].text.content).toContain("❌ **任务失败**");
+    expect((buildFeishuCard("needs_input", "t", "d") as Record<string, any>).body.elements[0].content).toContain("❓ **需要输入**");
+    expect((buildFeishuCard("failed", "t", "d") as Record<string, any>).body.elements[0].content).toContain("❌ **任务失败**");
   });
-  it("puts the keyword in a footer note when configured (feishu keyword gate)", () => {
+  // 2026-09-03：新增 quota_warning 状态——中途配额/限流告警，与其他终态卡风格一致
+  it("renders ⚠️ quota_warning card on schema 2.0", () => {
+    const card = buildFeishuCard("quota_warning", "task_q", "API Error: 429 Token Plan 用量上限") as Record<string, any>;
+    expect(card.schema).toBe("2.0");
+    const md = card.body.elements[0] as Record<string, any>;
+    expect(md.tag).toBe("markdown");
+    expect(md.content).toContain("⚠️ **配额告警**");
+    expect(md.content).toContain("task_q");
+    expect(md.content).toContain("429");
+  });
+  it("appends keyword as notation-sized markdown when configured (keyword gate; v2 has no note component)", () => {
     const card = buildFeishuCard("completed", "task_abc", "done", "agent-flow-ex") as Record<string, any>;
-    const note = card.elements.find((e: Record<string, any>) => e.tag === "note");
-    expect(note).toBeDefined();
-    expect(note.elements[0].content).toBe("agent-flow-ex");
+    const kws = card.body.elements.filter((e: Record<string, any>) => e.tag === "markdown" && e.text_size === "notation");
+    expect(kws).toHaveLength(1);
+    expect(kws[0].content).toBe("agent-flow-ex");
   });
-  it("omits the footer note when keyword is absent", () => {
+  it("omits the keyword element when keyword is absent", () => {
     const card = buildFeishuCard("failed", "task_abc", "boom") as Record<string, any>;
-    expect(card.elements.some((e: Record<string, any>) => e.tag === "note")).toBe(false);
+    expect(card.body.elements.some((e: Record<string, any>) => e.tag === "markdown" && e.text_size === "notation")).toBe(false);
   });
 });

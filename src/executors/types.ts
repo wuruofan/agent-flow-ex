@@ -3,6 +3,8 @@ export interface AgentEvent {
   toolUse?: { name: string; file: string | null };
   assistantText?: string;
   result?: { text: string; isError: boolean; subtype: string };
+  /** agent 命中可识别的硬配额/限流信号（如 429 / "Token Plan 用量上限"）；runner 据此触发飞书即时告警。 */
+  quotaWarning?: { status?: number; message: string; attempt?: number };
 }
 
 export interface Executor {
