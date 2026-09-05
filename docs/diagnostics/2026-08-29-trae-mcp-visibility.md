@@ -2,7 +2,8 @@
 
 **文档编号**：2026-08-29-trae-mcp-visibility
 **状态**：**根因已定，且可修**（2026-08-29 23:25 修订）。此前「Trae 平台内部行为、建议放弃」的结论**已撤回**，见 §6。
-**时间跨度**：2026-08-27 21:42 – 2026-08-29 23:25
+**时间跨度**：2026-08-27 21:42 – 2026-09-05 23:50
+**最新**：§11（2026-09-05）做了受控 kill 复现，并**首次实测两种恢复路径**；同时修订了 §3.4 / §5 / §10 三处不准确表述。
 **原始报告**：`raw/` 下 4 份（Trae 侧自动产出，结论互相矛盾，见 §5）
 
 ---
@@ -13,7 +14,11 @@
 
 **修复动作**：强制 Trae 重连（MCP 面板 disable → re-enable `agent-flow-ex`，或退出重启 Trae）。
 
-> 精修：所谓「不重连」是指**同一客户端在 server 断连后不会自愈重连**；但**整进程退出重启会拉起全新客户端，必能重连**。2026-08-30 已实测验证，见 §9。
+> 精修 1（2026-08-30，§9）：所谓「不重连」是指**同一客户端在 server 断连后不会自愈重连**；但**整进程退出重启会拉起全新客户端，必能重连**。
+>
+> 精修 2（2026-09-05，§11）：**面板 disable → re-enable 同样有效，无需退出 IDE**，两条恢复路径均已实测。同时证伪了「调用时懒惰重生」的猜想——server 死后 4 次真实调用全部失败，客户端一次都没重生。
+>
+> 精修 3（2026-09-05，§11）：断连期间 **tooling 层是诚实的**（`status=stopped, hasTools=false` → `0 extensions`），但 **renderer 会缓存这份结果且不会主动复查**——重连后面板可能仍显示旧状态，直到下一次对话轮次触发刷新。判活只认 `exthost/mcp-servers-host.log`。
 
 ---
 
@@ -106,7 +111,11 @@ WorkBuddy 的重连能力是可验证的：21:01 我手动 kill 掉它的 server
 
 ### 3.4 为什么之前没看出来
 
-主 IDE 的 MCP 面板仍显示 3 个工具——那是**断开前的缓存**，不是实时状态。于是现象变成「工具列表看着正常，但一调用就 `Extension not found`」，极易误判成「Schedule 会话权限/注入问题」。
+现象是「一调用就 `Extension not found`」，极易误判成「Schedule 会话权限/注入问题」。
+
+> ⚠️ **2026-09-05 修订（见 §11.3）**：把原因归给「面板显示过期缓存」**不准确**。实测 `renderer.log` 的 `getAllAgentExtensions` 在断连后如实输出
+> `filtered out: mcp.config.usrlocalmcp.agent-flow-ex, hasTools=false, status=stopped` → `final result: 0 extensions`。
+> 真正会滞后的是 **UI 面板的显示层**（它不主动复查，见 §11.4），而 tooling 判定层是准确的。
 
 ---
 
@@ -135,7 +144,11 @@ WorkBuddy 的重连能力是可验证的：21:01 我手动 kill 掉它的 server
 | `dispatcher-1788015123.md` | **B**（注册了但注入不到） | 同上 + 配置存在 | ⚠️ 结论对，依据仍错 |
 | `dispatcher-1788015569.md` | **B**（自我推翻 A） | 改用注册表视角 + render.log | ⚠️ 结论对，但未定位到断连 |
 
-**A 类判定错在哪**：`~/.trae-cn/mcps/` 是**已停更的旧版 `Trae CN`** 的运行时实例目录（该 app 自 2026-07-30 起停更），不是注册表。拿它判定「未注册」等于看错 app。
+**A 类判定错在哪**：拿 `~/.trae-cn/mcps/` 当「注册表」来判定「未注册」，是看错了对象——它不是注册表。
+
+> 📌 **2026-09-05 补充（见 §11.5）**：该目录也**不是**「已停更旧版 Trae CN 的遗留目录」。它是**当前 app 仍在写的、按工作区物化的 MCP 工具定义缓存**：
+> `~/.trae-cn/mcps/s_<workspace>-<hash>/solo_agent_lite/mcp_<server>/`（2026-09-05 当天 mtime：motelet 20:29、agent-flow-ex 22:33、kids-english 22:45）。
+> 但它与「工具能否调用」**无因果关系**——kids-english 工作区目录下根本没有 `mcp_agent-flow-ex`，工具照样全天可见。可用性真值只在 host 日志的 `status`。
 
 **四份都没找到真因**：它们都没读 `exthost/mcp-servers-host.log`，所以都停在「工具不可见」这一层，没往下追到「客户端已断连 11 小时」。
 
@@ -153,6 +166,8 @@ WorkBuddy 的重连能力是可验证的：21:01 我手动 kill 掉它的 server
 ---
 
 ## 7. 下一步
+
+> ✅ **2026-09-05 回填**：步骤 1、2 已在 §11.4 实测确认有效。**推荐优先用面板开关**（秒级，无需退出 IDE）；退出重启作为备选。
 
 1. **强制重连**（二选一，1 分钟）：
    - Trae MCP 面板 → `agent-flow-ex` → disable → re-enable
@@ -227,4 +242,89 @@ printf '%s\n%s\n%s\n' \
 **结论**：
 - Trae 同一 MCP 客户端在 server 进程被 kill 后**不自愈重连**，彻底楔死——与 08-29 §1 结论完全一致，开了自动执行权限也无变化。
 - 恢复手段不变：手动重启 Trae（见 §9，锁已清，必自愈）。WorkBuddy 侧 server 不受影响，其客户端断连即自愈。
-- 运维含义固化：**Trae 做派发方时，MCP 是一处单点故障——server 一旦崩溃，Trae 侧工具静默失效直到人工重启 IDE**；WorkBuddy 无此问题。这也是 §5.4 / spec 倾向 WorkBuddy 派发方（或 launchd 独立常驻 server）的核心理由。
+- 运维含义固化：**Trae 做派发方时，MCP 是一处单点故障——server 一旦崩溃，Trae 侧工具静默失效直到人工干预**；WorkBuddy 无此问题。这也是 §5.4 / spec 倾向 WorkBuddy 派发方（或 launchd 独立常驻 server）的核心理由。
+
+> ✏️ 更正（2026-09-05，§11.4）：「必须人工重启 IDE」**不准确**——在 MCP 面板 disable → re-enable 即可，无需退出 IDE。
+
+---
+
+## 11. 2026-09-05 受控复现：楔死第四次确认 + 恢复路径首次实测
+
+**背景**：为验证当前 Trae 版本（会话 `20260903T232833`，server pid `78195`，父进程 `77328` Trae Plugin Helper）行为是否变化，做一次**带精确时间戳的受控 kill**，并顺带补齐此前三处证据空白：① 懒惰重生（调用时是否按需 respawn）；② 面板 disable → re-enable 是否真的能恢复；③断连期间 tooling 层的真实判定。
+
+### 11.1 第三次复现（磁盘回溯，09-03 16:01）
+
+在翻旧会话时发现的**未记录复现**：session `20260901T225906` 的 host 日志最后两行
+
+```
+2026-09-03T16:01:05.248  MCPClient#onClose
+2026-09-03T16:01:05.251  MCPServerManager#onClose Disconnected.
+```
+
+事件统计：`Connecting` 1、`Connected` 1、`onClose` 1、`Disconnected` 1 → **零重连**。该文件 mtime 停在 16:01，而同会话的 `renderer.log` / `main.log` / `exthost.log` 一直写到 `23:26:49 onWillShutdown` —— 即 **Trae 带着一条断掉的 MCP 连接存活并使用了 7 小时 25 分**。
+
+### 11.2 第四次复现（受控 kill，09-05 22:29）
+
+```
+22:29:33  kill -9 78195
+22:29:33.176  MCPClient#onClose
+22:29:33.195  MCPServerManager#onClose Disconnected.
+22:30:33      （60s 后）host 日志零新事件；78195 已消失；
+              系统内仅存的 dist/server.js 是 WorkBuddy 的进程 → Trae 未 respawn
+```
+
+**懒惰重生猜想（此前唯一未被证伪的解释）被推翻**：用户在 22:32:31 / 22:33:13 / 22:40:11 / 22:40:33 于 Trae 内发起**四次真实调用**，全部失败，客户端一次都没重生：
+
+```
+22:32:31  McpService callTool agent-flow-ex agent_flow_status → Extension agent-flow-ex not found
+22:33:13  McpService callTool agent-flow-ex agent_flow_status → not found
+22:40:11  McpService callTool <空名> <空名>                    → not found（runAgentExtension code 6001）
+22:40:33  McpService callTool agent-flow-ex agent_flow_status → not found（code 6001）
+```
+
+### 11.3 断连期间 tooling 层是诚实的（修订 §3.4）
+
+`renderer.log` 的 `getAllAgentExtensions` 在断连前后对比：
+
+| 时刻 | 输出 |
+| :--- | :--- |
+| 09-05 13:21:38（断连前） | `final result: 1 extensions: …(tools=[agent_flow_submit, agent_flow_status, agent_flow_cancel])` |
+| 09-05 22:43:45（断连后） | `filtered out: mcp.config.usrlocalmcp.agent-flow-ex, hasTools=false, status=stopped` → `final result: 0 extensions` |
+
+即 **tooling 层准确知道 server 已停并把它过滤掉**。给到 agent 的错误只有 `Extension not found` / `code 6001`，没有「server 已停止」的语义，这正是 agent 转而翻 `mcp.json`、查数据库的诱因。
+
+### 11.4 恢复路径实测：面板 disable → re-enable 有效（无需退出 IDE）
+
+用户在 Trae 的 MCP 设置里把 `agent-flow-ex` 关闭再打开（约 23:43），host 日志立刻出现第二次完整连接周期：
+
+```
+22:29:33.195  Disconnected.
+   （沉默 73 分 41 秒，期间 4 次真实调用全部失败）
+23:43:14.487  MCPServerManager#start Connecting with config...
+23:43:14.536  MCPClient#start Start With StdioServerParameters
+23:43:15.570  [Server Internal Log] mcp server ready (stdio)
+23:43:15.658  listTools Got tools: agent_flow_submit, agent_flow_status, agent_flow_cancel,
+                                   agent_flow_version, agent_flow_restart     ← 当前 dist，5 个工具
+23:43:15.660  MCPServerManager#start Connected.
+```
+
+事件计数 1/1 → **2/2**；Trae 名下新起 server 进程 `89474`（父进程 `77328`）。**结论：Trae 会 respawn，但只在配置 UI 上发生显式用户动作时**——不自动、也不懒惰。面板上每个 server 旁还有一个「重启」按钮（推测同一条 recreate 路径，未实测）。
+
+### 11.5 `~/.trae-cn/mcps/` 的真实身份（修订 §5）
+
+它是**当前 app 仍在写的、按工作区物化的 MCP 工具定义缓存**，不是旧版遗留目录：
+
+```
+~/.trae-cn/mcps/s_<workspace>-<hash>/solo_agent_lite/mcp_<server>/
+  2026-09-05 mtime：s_motelet-4d781536 20:29（唯一含 mcp_agent-flow-ex 的）
+              s_agent-flow-ex-b1bcbfb1 22:33、s_kids-english-f5da3fcb 22:45
+```
+
+但与可用性**无因果关系**：kids-english 工作区目录下没有 `mcp_agent-flow-ex`，其会话里工具照样全天可见。所以「换个目录就调不到」不是这条机制导致的。
+
+### 11.6 更新后的运维结论
+
+1. **判活**：只看 `exthost/mcp-servers-host.log` 的 `Connected`。面板图标会滞后——重连后 renderer 未必立刻复查（本次 23:43 重连，22:45 之后就再没查过）。
+2. **恢复**：优先 MCP 面板 disable → re-enable（秒级，已实测）；不行再退出重启 Trae（已实测）。
+3. **MCP 是 window 级单连接**：换 workspace、换 chat session 都不会重连——「目录」不是变量，别往这个方向查。
+4. **尚未验证**：① 面板上的「重启」按钮是否等价；② `agent_flow_restart` 在 Trae 下的行为——`src/tools/restart.ts` 依赖 host respawn，而 Trae 只在用户点 UI 时 respawn，**推断该工具在 Trae 下等于自杀**（未实测，调用前请先确认）。
