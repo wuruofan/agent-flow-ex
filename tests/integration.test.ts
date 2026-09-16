@@ -71,6 +71,24 @@ if (mode === "hang") {
   emit({ type: "system", subtype: "init", session_id: "sid-ni-" + process.pid });
   emit({ type: "assistant", message: { content: [{ type: "text", text: "❓NEEDS_INPUT: which database engine?" }] } });
   emit({ type: "result", subtype: "success", result: "❓NEEDS_INPUT: which database engine?", is_error: false });
+} else if (mode === "transient") {
+  // 瞬态重试验收：用计数器文件记录这是第几次运行（runner 每次重试都是全新进程）。
+  // 前 FAKE_FAIL_TIMES 次吐 429 终态报错，之后成功——验证 runner 兜底重试能救回任务。
+  emit({ type: "system", subtype: "init", session_id: "sid-tr-" + process.pid });
+  const fs = require("node:fs");
+  const cntFile = process.env.FAKE_ATTEMPT_FILE || "/tmp/afex-attempt.txt";
+  let n = 0;
+  try { n = Number(fs.readFileSync(cntFile, "utf8")) || 0; } catch {}
+  n++;
+  try { fs.writeFileSync(cntFile, String(n)); } catch {}
+  const failTimes = Number(process.env.FAKE_FAIL_TIMES ?? "2");
+  if (n <= failTimes) {
+    emit({ type: "assistant", message: { content: [{ type: "text", text: "API Error: Request rejected (429) · 当前已达到 Token Plan 用量上限" }] } });
+    emit({ type: "result", subtype: "error", result: "API Error: Request rejected (429) · 当前已达到 Token Plan 用量上限", is_error: true });
+  } else {
+    emit({ type: "assistant", message: { content: [{ type: "text", text: "all done" }] } });
+    emit({ type: "result", subtype: "success", result: "all done", is_error: false });
+  }
 } else {
   emit({ type: "system", subtype: "init", session_id: "sid-ok-" + process.pid });
   emit({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/tmp/fake.txt" } }] } });
@@ -277,4 +295,37 @@ suite("integration: concurrent submits", () => {
     // 端到端执行时间 sanity check：4 个任务并发跑（fake-agent 每轮 <200ms），整轮 < 8s
     expect(Date.now() - t0).toBeLessThan(8_000);
   }, 20_000);
+});
+
+suite("integration: transient API error retry (P0)", () => {
+  it("retries on 429 and completes after transient failures", async () => {
+    process.env.AGENT_FLOW_RETRY_BACKOFF_MS = "50,50";
+    const attemptFile = join(home, "attempt.txt");
+    setupHome({ FAKE_MODE: "transient", FAKE_ATTEMPT_FILE: attemptFile, FAKE_FAIL_TIMES: "2" });
+    const r = await submit({ prompt: "do work", project_path: home });
+    const id = (r as { task_id: string }).task_id;
+    expect(await waitForTerminal(id, 12_000)).toBe("completed");
+    const final = status({ task_id: id }) as { status: string; result?: string };
+    expect(final.result).toContain("all done");
+    // 前两次 429 各产生一条 _retry 标记；第 3 次成功不再重试
+    const log = readFileSync(join(home, "logs", `${id}.jsonl`), "utf8");
+    expect(log.split("\n").filter((l) => l.includes('"_retry"')).length).toBe(2);
+    // 计数器到 3：runner 共运行 3 次（2 次重试 + 1 次成功）
+    expect(Number(readFileSync(attemptFile, "utf8"))).toBe(3);
+    delete process.env.AGENT_FLOW_RETRY_BACKOFF_MS;
+  }, 15_000);
+
+  it("gives up after MAX_ATTEMPTS when 429 never recovers", async () => {
+    process.env.AGENT_FLOW_RETRY_BACKOFF_MS = "50,50";
+    const attemptFile = join(home, "attempt.txt");
+    setupHome({ FAKE_MODE: "transient", FAKE_ATTEMPT_FILE: attemptFile, FAKE_FAIL_TIMES: "99" });
+    const r = await submit({ prompt: "do work", project_path: home });
+    const id = (r as { task_id: string }).task_id;
+    expect(await waitForTerminal(id, 12_000)).toBe("failed");
+    const log = readFileSync(join(home, "logs", `${id}.jsonl`), "utf8");
+    // MAX_ATTEMPTS=3 → 仅 2 次重试（第 3 次失败即终态 failed）
+    expect(log.split("\n").filter((l) => l.includes('"_retry"')).length).toBe(2);
+    expect(Number(readFileSync(attemptFile, "utf8"))).toBe(3);
+    delete process.env.AGENT_FLOW_RETRY_BACKOFF_MS;
+  }, 15_000);
 });
