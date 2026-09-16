@@ -28,4 +28,21 @@ describe("prompt contract", () => {
     expect(extractNeedsInput("all done")).toBeNull();
     expect(extractNeedsInput("NEEDS_INPUT without marker emoji")).toBeNull();
   });
+  it("omits the time-budget/HANDOFF clause when no timeout is provided", () => {
+    const p = wrapInitialPrompt("任意任务");
+    expect(p).not.toContain("关照时间预算");
+    expect(p).not.toContain("HANDOFF.md");
+  });
+  it("injects time budget + HANDOFF handoff contract when timeout is provided", () => {
+    const p = wrapInitialPrompt("任意任务", 5400);
+    expect(p).toContain("关照时间预算");
+    expect(p).toContain("90 分钟");
+    expect(p).toContain("HANDOFF.md");
+    expect(p).toContain("不要**为此执行 git commit / push");
+  });
+  it("injects time budget into continue rounds too", () => {
+    const p = wrapContinuePrompt("用 SQLite", 600);
+    expect(p).toContain("HANDOFF.md");
+    expect(p).toContain("10 分钟");
+  });
 });

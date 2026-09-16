@@ -39,6 +39,7 @@ worker（后台 agent CLI）不共享调度会话的任何上下文。以下模�
 - **Context 里给足绝对路径与现状事实**——worker 看不到会话，宁可多写两行现状，不要让它去猜。
 - 目标仓库若是公司项目/需要特定 commit 纪律，在 Constraints 里写清；但 Git Discipline 默认仍是不 commit。
 - 任务若引用了 spec/plan 文档，把文档路径放进 Context（如 `docs/superpowers/plans/xxx.md`）并指示先读。
+- **时间预算不用写进工单**：runner 会自动把本任务 `timeout_sec` 注入 worker 行为契约（`src/prompt.ts`），worker 在预算用尽前（剩余 <15–20%）会自行把进度写进项目根目录 `HANDOFF.md`（**不 commit / 不 push**）。调度方收到 timeout 终态时**先看该文件**，据其判断残留与续做方式——这也让"未提交却已改到一半"的脏树自带说明。
 
 ## 模板 B：needs_input 续跑答复
 

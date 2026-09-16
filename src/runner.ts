@@ -88,7 +88,7 @@ async function main(): Promise<void> {
     finalize(store, task, "failed", { error: `round ${task.rounds} input not found in log` }, cfg);
     return;
   }
-  const prompt = task.rounds === 1 ? wrapInitialPrompt(rawInput) : wrapContinuePrompt(rawInput);
+  const prompt = task.rounds === 1 ? wrapInitialPrompt(rawInput, task.timeout_sec) : wrapContinuePrompt(rawInput, task.timeout_sec);
   appendFileSync(task.log_path, JSON.stringify({ type: "user_prompt", round: task.rounds, text: rawInput }) + "\n");
   // cancel 场景：server 端 killTree(runnerPid)（组杀 runner + agent；逃逸子进程靠 ppid 快照补杀）。
   // 先等 final 通知最多 NOTIFY_GRACE_MS 完成再退出，避免截断导致 notify_failed 未标。
