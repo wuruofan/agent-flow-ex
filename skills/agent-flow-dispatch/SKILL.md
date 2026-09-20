@@ -93,9 +93,24 @@ agent_created: true
 
 派发后立即把 `task_id` 与任务摘要报给用户，结束本轮。**不轮询、不主动 status**——终态会推飞书唤醒。
 
-**收到飞书终态卡后的核验流程（防假阳性约定）**：worker 报告**默认不完全采信**。按 `references/confidence-check.md` 走 5 问核对（worker 自报的数字/路径/行号每条能否定位到证据；不能定位即标低置信度）+ 置信度三档（高/中/低）分级。低/中 → 走 `agent_flow_status({ task_id })` 拉完整 result 复核；不能闭环 → `agent_flow_submit({ continue_of, prompt: <反问> })` 走 needs_input 反问或 `agent_flow_cancel` 重派。**不要把"看起来完成"的报告直接转给用户**。
+**收到飞书终态卡后的核验流程（防假阳性约定）**：worker 报告**默认不完全采信**。按 `references/confidence-check.md` 走 5 问核对（worker 自报的数字/路径/行号每条能否定位到证据；不能定位即标低置信度）+ 置信度三档（高/中/低）分级。低/中 → 取**完整**报告复核（⚠️ `agent_flow_status` 返回的 `result` **会被截断**，长报告拿不到；全文在 `~/.agent-flow-ex/logs/task_<task_id>.jsonl`，见排错表）；不能闭环 → `agent_flow_submit({ continue_of, prompt: <反问> })` 走 needs_input 反问或 `agent_flow_cancel` 重派。**不要把"看起来完成"的报告直接转给用户**。
 
 **终态是 timeout / 没有报告时**：先看项目根 `HANDOFF.md`（worker 临近预算用尽时会写：已完成的改动、残留部分、下一步、如何验证），再 `git status` + `git diff --stat` + 逐项对照工单，判断是"改完了没验"还是"改到一半"——前者按验收清单自己跑完（**变异必须亲手补跑**，那正是超时时跳过的一步），后者才重派并在工单里写明残留。别因为"没有报告"就当作"没有产出"。另：`error TS` 这类"回到基线"的验收要按**集合**证，不能按计数证（+1 新错误可能被 −1 无关修好抵消）。
+
+`failed` 的第三种成因（9/17 实测）：**不是超时，而是模型侧 429 额度上限**（`"error": "API Error: Request rejected (429) … Token Plan 用量上限"`，`rounds: 1`、`elapsed < timeout`）。额度恢复后 **不要重派**——工作树是完好的，按上面的流程自评一遍即可。三个具体点：
+- `agent_flow_status` 的 `files_changed` **可能比 `git status` 列得多**（worker 做变异测试时 `cp` 改了又还原本，如 `helpers.ts` / 被 scope out 的文件；9/19 实测另一成因：**只是被 Read 过、从未编辑**的文件也进列表 —— 850 报 6 个、实际改 2 个，多出的正是它自己声明"未碰"的 spec 与脚本）→ 以 `git status` 为准，别当成不一致。**"Read 也算"这条成因 9/20 已修**（runner 侧按工具名过滤，只读工具的路径不再进列表）；`cp` 类"改了又还原"仍是真实的过度报告，下一条复算规则也照旧。**同理，报告里的增删行数也不可直接采信**：850 自报 src `+15/-1` / test `+180/-18`，`git diff --numstat` 实为 `+14/-1` / `+166/-17` —— 一律以 `numstat` 复算。
+- 中断点在"源码改完、验收未跑完"时，最容易的残留是**它新写的测试代码自带新 `error TS`**（实测 600→605，5 行 / 3 条唯一，全在新增测试里：类型谓词不可赋值、`toBe` 两侧一边带 `!` 一边是 union、`SessionEntry` 没窄化）。这类修一下就好，但**必须自己修**——那是判"是否回到基线"的分母。
+- 取基线的**首选方法**是 `git worktree add --detach /tmp/<name> <base-sha>` + 在两个位置软链 `node_modules`（仓库根与 `gateway/`）→ 在 worktree 里跑本地 bin 的 tsc。**完全不碰当前工作树**，比 `stash`/`checkout --` 安全得多（两者都会把未提交的成果置于风险中），用完 `git worktree remove --force` 收尾。归一化时注意 worktree 会改变相对路径前缀（`../packages/…` vs `packages/…`）与内嵌的绝对路径——先按前缀归一，再 `comm`，否则会看到成对假阳性。
+
+**验收型脚本（探针）的复核另有一套六问**——它的产物是"一次观测"，不是断言本身，所以"跑绿了"不等于"验到了"。9/17 实测：一份结构完全正确、隔离严密、RED/GREEN 都能判别的探针，**它跑的那次压缩其实什么都没压**，而它自己写的"确实切掉了东西"断言恒真，没能拦住。
+- **它观测到的主体动作真的发生了吗？** 别用脚本自己报的"PASS"当证据，去读被观测对象的**持久化产物里的真值字段**。同一个"压缩是否生效"的例子里，`marker 是否还在` 是启发式，`details.removedCount` 是事实——优先事实。
+- **断言的候选集里有没有"事件之后才产生"的元素？** 有就恒真。上例的判据集是 `全部标记 − kept 段里的标记`，而其中一个标记是**验证轮**（边界之后）才生成的提示词，天然不在 kept 段里 ⇒ 永远非空 ⇒ 断言不可能失败。写判据时先问：这个元素在事件发生前存在吗？
+- **脚本里有没有 `skip` 分支？** `if (… ) { fail } else { console.log("skipping …") }` 是回归的藏身处——真正该做的是把 else 也变成 fail，或说明为什么那条路走不到。一个验证脚本里出现"跳过断言"就是缺陷本身。
+- **报"观测成功"时附上它测的量级**。上例若早报一句 `removedCount=0, serializedChars=0`，"成功"会立刻露出问题。
+- **参数是否让被测行为不可达？** 两个不同口径的量（触发用的 usage 口径含系统提示开销，切分用的 char 口径只看消息）会让触发先于切分预算达成 ⇒ 被测动作结构上不可能发生。这类问题改参数，不是改代码，但**必须改**，否则整轮验证没有意义。
+- **改法：把尺寸从"试出来的常量"改成"运行时测量 + 不满足就拒绝"**。上例的定式（可直接套）：先在第一轮观测里**测出**固定开销 `H`（= 首轮 `tokens − 2×prompt`），规则是 `H < threshold − 4P`（第 k 轮触发满足 `tokens(k) = H + (k+2)P`，要 k ≥ 3 才代表上下文里已有两轮重消息、切分才切得到种子标记），由此**反推** window/prompt 两个默认值（实测 H ≈ 7 179 → window 66 000 / prompt 48 000）。再补两条便宜但关键的自检：**期望的 threshold 必须等于被观测进程报出的 threshold**（否则配置替换没落地，后面所有算术都是虚构的）、**验证轮若又触发一次压缩就算失败**（否则它那条 `messages=` 是压缩前的数，报告会自己骗自己）。拒绝要带**可执行的修复值**（"re-run with --context-window X"），不要只说"参数不对"。
+- **谁改：诊断已在手里、改动只有几行时，自己改比再派一轮快**，而且省一次上下文传递（这次就是这么做的：改 4 处、自己跑 GREEN/RED、恢复用 `cmp` 证明）。只有当修复需要**新的探索**（根因还没定位，或要改动被测代码本身）时才重派，并且工单里要带上已有诊断，别让 worker 从头再查一遍。
+- 复核完毕记得**清现场**：探针的临时根里常有配置副本（可能含密钥），跑完核对该副本与用户真实配置都没被动过，再删。
 
 ### Step 5 — needs_input 续跑
 
@@ -121,6 +136,8 @@ cancelled ← 任意非终态可取消
 | 任务 `failed`，`error: failed to spawn runner … ENOENT` | executor `bin` 解析失败（裸名 + PATH 找不到）→ 改 `config.json` 为绝对路径 |
 | 飞书不推送 | `notify.dry_run` 还是 `true`；或 `FEISHU_WEBHOOK_URL` 不在 `.env` / server 环境 |
 | `{env:VAR}` 报 not found | 对应密钥缺在 `$HOME/.agent-flow-ex/.env`，补上后重启 MCP server |
+| **`agent_flow_status` 的 `result` 只给到一半**（长报告在句子中间断掉、承诺的小节没出现） | **不要重派、不要据此猜结论**。全文落在 `~/.agent-flow-ex/logs/task_<task_id>.jsonl`（每行一个 JSON）。抽法：逐行 `json.loads` → 递归收集 `{"type":"text"}` 的 `text` → **先打印每块的字符数**，最终报告是其中最长的那块（**别盲取最后一块**：实测 T0 报告是第 2 块、阶段 2 是第 18 块）。9/20 一天踩了三次（11 088 字符的报告 MCP 只回一半）。一段可直接用的提取：`/Users/meow/.workbuddy/binaries/python/versions/3.13.12/bin/python3 -c` 里做上面的 walk，把最长块写到 `/tmp/t<stage>_report.md` 再 `Read`。|
+| **要回读「工单正文」而不是报告**（核对某阶段当初派了什么 / 查 task_id ↔ 阶段的对应） | 工单是 JSONL 的**第一条**记录，形状 `{"type":"user_prompt","round":…,"text":"…"}` —— **顶层 `text` 字段**，**不是** `message.content`（后者是 assistant 侧文本块的形状）。字段用错会**静默拿到空串**：9/20 实测按 `type=="user"` + `message.content` 抽 12 个文件全空，差点误判成"日志没存工单"。另：`task_id` 带随机后缀 + 阶段号只写在工单正文里 ⇒ 想知道「阶段 N 是哪个 task_id」只能这样回读，不要凭记忆写进 spec。|
 
 ## Resources
 

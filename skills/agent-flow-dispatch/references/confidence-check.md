@@ -7,6 +7,15 @@ worker（后台 agent CLI）的终态报告**默认不完全采信**——M3 wor
 来自 9/3 真实任务的两个边界场景：
 
 - **截断**：notifier 推飞书时 `MAX_RESULT_LEN=4012` 字符，长报告的 §止血建议 / §遗留问题经常被切掉——只看卡片可能漏关键信息。
+  **补救路径（9/19 实测）**：全文在 `~/.agent-flow-ex/logs/task_<id>.jsonl`（完整 worker 会话）。
+  用 python 取收尾报告：逐行 `json.loads`，`type=="assistant"` 时遍历 `o["message"]["content"]` 里
+  `c["type"]=="text"` 的 `c["text"]`（取最后一条含 `## ` 的），或 `type=="result"` 的 `o["result"]`。
+  两个反例别走：`~/.agent-flow-ex/tasks.db` 的 `result` 列**同样被截**（9/19 实测 `len(result)` 恰为 4012，
+  是**记录时**就截了，不是卡片层截的）；`tasks.db` 的 `log_path` 字段指向的是另一个 **0 字节**的
+  `logs/task_<id>.log`，不是全文。
+  ⇒ 所以「§5–§7 没出现」在卡片上与「worker 根本没写」**不可区分**，唯一判据是去 jsonl 里找。
+  9/19 实测：一张被截到只看得到 §1–§4 的卡，jsonl 里 §5/§6/§7 完整，且 §6 的结论**与我独立复算的一致**
+  （都指向 gateway 侧的 `context_window > 0` 过滤）——差一点就因为「报告没写」而误判 worker 漏答验收条款。
 - **事实继承**：调度方 prompt 里写的"前序已确证事实"会被 worker **直接采用而非复核**。前序 worker 报告本身可能有未排除路径。
 
 ## 防假阳性 5 问
@@ -52,7 +61,7 @@ worker（后台 agent CLI）的终态报告**默认不完全采信**——M3 wor
 5 问问的是「报告内部自洽吗」，下面十条问的是「报告与磁盘一致吗」——两类都要过。
 
 1. **报告的文件清单当线索，不当事实。** 权威证据是 `git show --stat <commit>` 逐个看（或
-   `git diff --stat <base>..HEAD`）。9/11 的 spec-B 交付里，worker 的 `files_changed` 列了约 30 个
+   `git diff --stat <base>..HEAD`）。9/11 的 spec-B 交付里，runner 记的 `files_changed` 列了约 30 个
    **没有任何 commit 碰到**的路径（含它自己没改的 `docs/`），真实改动是 20 个文件。清单错≠活错，
    但清单错意味着**你不能靠它判断边界**：有没有夹带无关改动、文档有没有被「顺手」改、任务包不包含
    它没提的文件——只能靠 git 数。
@@ -163,9 +172,21 @@ ripgrep shim，`-P` 直接报错，而我没看 exit code 差点当成"0 个制�
 
 1. **`git status` 是文件清单的唯一权威，MCP 返回的 `files_changed` 不是。** 本轮 MCP 列了 36 个
    文件（含 `../cc-black/src/utils/git.ts`、`deny-paths.ts`、`backup.ts`、docs/*、若干 test），
-   而磁盘上只有 23 个 —— 那些是 worker 改过又改回（或只是打开过）的。**先 `git status --short`
-   对齐 plan 的 §2 文件表**，再看别的；否则会照着一张假清单去追越界改动。判"某文件是否被动过"
-   用 mtime + `git status`，别用 `files_changed`。
+   而磁盘上只有 23 个。**先 `git status --short` 对齐 plan 的 §2 文件表**，再看别的；否则会照着
+   一张假清单去追越界改动。判"某文件是否被动过"用 `git status`，别用 `files_changed`。
+   **机制已查实（9/20 读 agent-flow-ex 源码 + 复现）**：它**不是** worker 自述，而是 **runner 进程**
+   解析 CLI stream-json 攒的 —— `src/executors/claude.ts:26-30` 取每条 assistant 消息里**第一个**
+   `tool_use` 块，只要 `input.file_path` 是字符串就塞进 Set，**完全不判工具名** ⇒ `Read` 一样进；
+   `src/runner.ts:114/152` 才落库（`src/tools/status.ts:31` 原样返回，无截断/过滤）。
+   所以误差是**双向**的：**多报**（Read 过的文件全在 —— 9/20 实测某任务 20 个文件里 14 个只被 Read 过，
+   `Read` 命中 15 次 vs `Write` 6 次）；**少报**（Bash 里 `cat > f`、`git mv`、heredoc 都没有 `file_path`，
+   且每消息只取第一个 tool_use，并行调用其余全丢）。⇒ 不要指望"过滤掉某类工具名"能修好，
+   **`git status` 永远是唯一权威**。本仓还有一处文档漂移：spec-v2 说"从 Edit/Write 事件累计"，与实现不符。
+   **9/20 已修「多报」侧**：`src/executors/file-tools.ts` 的 `isFileMutatingTool` 按工具名分类
+   （Edit/Write/MultiEdit/NotebookEdit + opencode 的 edit/write/apply_patch），Read/Grep/Glob 不再进
+   `files_changed`；复跑 8 个真实任务，清单 123 → 41 条（−67%），一个只读核查任务从"报 18 个"归到 0。
+   **「少报」侧未变**（Bash 里 `cat > f` / `sed -i` / heredoc 仍拿不到 `file_path`），所以上面那条
+   "git status 是唯一权威"的结论**照旧成立**；spec-v2 那句漂移也随之消除（实现回到文档口径）。
 2. **`git reflog` 能抓出 worker 用了你明令禁止的 git 子命令。** 本轮 ticket 写了「不 stash」，
    `git reflog` 却有 3 条 `reset: moving to HEAD`（22:54 / 22:56 / 23:03）—— 那正是 `git stash`
    的内部动作。`git stash list` 看不出（stash+pop 的条目会被 drop 掉），**只有 reflog 留痕**。
@@ -231,6 +252,12 @@ plan/ticket 里最容易被"讲通"的一类交付，是「每条新断言在旧
   （`Expected: true / Received: false`）⇒ 它写的失败版本**真的可触发**。
 - **还原必须可证**：改前把产物 `cp` 到 `/tmp`，改后 `cp` 回来，再 `diff -q` 逐文件证明与产物**逐字节相同**
   （本轮 4 个文件 `ALL IDENTICAL`）。只跑一遍测试然后口头说"我改回去了"是另一种假阳性。
+- **更省的一种（优先试）：先看「参数」能不能把被测行为强制到另一侧 —— 能，就完全不用改源码。**
+  本轮（motelet `agents` 层）要证"预算内必须给出完整形态 `- name: description`"这条断言有判别力：
+  没碰源码，直接调 `formatSkillsListing(skills, /* budget */ 1)` 逼它走降级分支，把两边输出打印对拍 ⇒
+  降级输出**不含**该整行 ⇒ 断言确实会红。断言正确、零还原风险、一条命令完成。
+  **判"这条断言能不能变红"之前先问：被测函数的哪个人参直接控制那个分支？**（预算 / 大小上限 / 阈值 / 开关 / 模式）
+  找不到这样的人参，才退回上面的改源码 + `cp` 备份法。
 - 顺带一个体检项：**worker 自报的 tsc 数字要自己拉基线**。"1069 → 1068，无新增错误"只有在
   `monitor.ts` 的错误数**同向减少**（5 → 4）时才自洽；总数只减 1 也可能是"旧错误消失、新错误冒出来"，
   必须按文件分别数。
@@ -341,6 +368,23 @@ worker 只能选可满足的那个（放在 `:109` 之后、early return 之前�
 修 plan（并在 `§As built` 里把偏离记成"plan 自相矛盾、按可满足形式落地"），
 **不要去改 worker 已经正确的代码**。派发 prompt 是从 plan 抄的，所以同一个矛盾会同时污染两边。
 
+## 计划步骤被我"精简"过的地方，就是缺陷入口：先查参考实现（9/16 实测）
+
+Task 5 交付了 `CompactionDetails.readFiles/modifiedFiles`，全绿；但 `grep -rn "readFiles" gateway/src/ tui/`
+显示**没有消费方**——模型永远看不到清单。我当时把它记成"开放决策：Task 6 加渲染点，或改 spec §3.4(a)"。
+查上游 pi-mono 后结论翻转：**上游两件事都做**——`summary += formatFileOperations(...)` 紧接
+`details: { readFiles, modifiedFiles }`（`compaction/compaction.ts:689-696`）。契约本来就是对的，
+**是我的计划 Step 2 在重推锚点时丢掉了字符串那一半**。⇒ 三条：
+
+1. **"实现与契约不一致"时，先查参考实现，再谈改契约。** 选项清单若只有"改契约"和"加实现"两项，
+   通常漏了第三种：契约对、步骤被简化过。把退化写成契约是最贵的一种收尾（这份 spec 的前提就是
+   motelet 相对上游退化，用"改契约"收尾等于把退化正当化）。
+2. **工单里贴参考实现的做法，不要只贴计划措辞。** worker 会照字面执行，包括我的简化——这处照原样派发，
+   它会实现一个没人读的字段并且全绿，验收条款也不会红。
+3. **验收"字段写入了"不等于"契约兑现"：要问谁读它。** `grep -rn <字段名> src/ tui/` 找消费方；
+   没有消费方就是没兑现，测试多少绿都不算。这类缺口只能靠端到端用例堵——字符串组装可以被
+   "没人读的字符串"满足，走一遍真 `SessionManager` → `buildSessionContext` 才能证明可达。
+
 ## 语料的 unit 先确认，再统计（9/15 实测）
 
 给 Task 2 写工单时才发现：`~/.motelet/sessions/*.jsonl` **一个文件不是"一个上下文"**——记录带 `agentId`，
@@ -358,10 +402,57 @@ active `revert`。
 
 与第 10 条同源，顺序是：**先问"我在数什么单位"，再问"用什么命令数"**。
 
+## 断言里对「实际值」做了归一化，等于把那个性质变成永真（9/16 实测）
+
+worker 交付的 `computeFileLists` 承诺返回 sorted 列表（doc-comment 也这么写）。删掉两个 `.sort()` 后
+**36/36 全绿** —— 因为断言写的是 `expect(details.modifiedFiles!.sort()).toEqual([...])`：`.sort()`
+作用在**实际值**上，比较的是排好序之后的数组，排序与否都通过。
+
+⇒ 要 pin 住一条性质，夹具与断言必须同时到位：夹具让**插入序 ≠ 目标序**（这里是按逆序读文件），断言比
+**产出原样**。查"未 pin 的性质"时把断言当嫌疑对象读一遍：`.sort(` / `.map(` / `.filter(` 出现在
+`expect(...)` 的实际值一侧就把该性质洗掉了；叠上 `.length` / `toBeDefined` 这类弱断言，一个测试可以
+"覆盖"某功能却什么都测不到。
+
+## 交付后自己动手的"清理"必须整套复跑（9/16 实测）
+
+worker 写的 `manager.getCurrentSessionFile?.()` 看起来是死代码 —— 该方法在 `manager: SessionManager` 上
+是**必填**的，`?.` 读起来像对刚核实过的 API 还不确定。改成直调后**3 个测试红**：
+`TypeError: manager.getCurrentSessionFile is not a function` —— 那些测试传的是**部分桩** manager，
+`?.()` 静默得到 `undefined` 正是它在防守的东西。
+
+⇒ ① 判"死代码"前先问「谁会以不满足该类型的方式调用它」，**测试桩是最常见答案**；② post-delivery 的任何
+编辑之后跑**整套**，别只跑相关子集 —— 这个回归只在 `project-context-injection.test.ts` 上现形，而它与本
+任务毫无关系；③ 改坏了就回退，并在 plan §6 记一句"试过并否决"，否则下一个人会再踩一次；④ 同一轮里还可能
+夹着**负载抖动**（本次 `uptime` load 26.9 时另有多条 `sleep`/计时类 fail），所以"9 fail"要按"3 个确定性 +
+若干抖动"拆开说，别把抖动也算成自己的战果。
+
+## 计划里标了"owner only / 不要模拟"的步骤，是缺陷高发区——别只派出去就等（9/16 实测）
+
+一条实测教训，来自压缩重构 Task 6：计划把步骤 3 标成 **"Session owner only — do not simulate"**，理由是
+`chat` 不派发斜杠命令、需要自建 WS 客户端、且要写 `docs/debug/**`（不能自动提交）。判断是对的一半——
+**但"owner only"往往同时意味着"这一步从没被任何测试跑过"**。
+
+那次我把它和可派发的步骤 1+2 **同时开工**，结果第一次跑（0 秒、回报 "Context compacted"）就看到摘要落盘为
+`""`，顺藤摸到三层既有缺陷：事件名用了一个库从不发出的变体（`ev.type === "text"`，真实是 `text_delta`）、
+`error` 事件被静默吞掉（调用方的 fallback 成了死代码）、闭包没传 api key（主循环能跑是因为下游框架自己注入）。
+1827 条绿测全都没看见，因为测试夹具喂的正是那个虚构的事件形状。
+
+可操作的结论：
+
+1. **把"owner only"当成"没有被验证过"来对待，而不是"谁做都一样"。** 排期时让它**与可派发部分并行**，
+   不要串行排在后面——它的产出往往决定后面的步骤还有没有意义。
+2. **派发前，先落实 owner 那部分的"可运行性"**：这一步需要什么入口（这里是一个自建 WS 客户端）、
+   入口是否有现成的、以及**跑一次的最小代价**。跑得起来比读得懂更重要。
+3. **探针要能区分"库的真实契约"与"实现的假设"。** 对着依赖的类型定义写一个两行探针（真实形状 vs
+   代码假设的形状），比读 100 行代码更快定案，也顺手解释了"为什么测试是绿的"。
+4. **发现 P0 时先不要顺手修**：修法通常有设计选择（累积哪个事件、错误怎么上浮、凭据从哪来）。
+   把证据链交付给用户、列出选项，比自己定一个更符合"先讨论再执行"的协作方式。
+
 ## 处理路径速查
 
 ```
-终态卡 → 走 5 问 → 高 → 转用户
+终态卡（report 可能被截到 4012 字符 → 先取 logs/task_<id>.jsonl 的全文）
+      → 走 5 问 → 高 → 转用户
                 → 中 → status 复核 → 闭环 → 转用户 / 仍模糊 → needs_input 反问
                 → 低 → needs_input 反问 OR cancel 重派（带更明确的 Context）
 ```
