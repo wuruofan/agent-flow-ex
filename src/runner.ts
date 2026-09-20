@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { openStore, type Task, type TaskPatch } from "./store.js";
 import { loadConfig, resolveEnvPlaceholders } from "./config.js";
 import { getExecutor } from "./executors/types.js";
+import { isFileMutatingTool } from "./executors/file-tools.js";
 import { buildAgentEnv } from "./agent-env.js";
 import { wrapInitialPrompt, wrapContinuePrompt, extractNeedsInput } from "./prompt.js";
 import { sendFeishuCard, buildFeishuCard } from "./notifier.js";
@@ -147,7 +148,9 @@ async function main(): Promise<void> {
         const patch: TaskPatch = {};
         if (ev.sessionId && !task.session_id) { patch.session_id = ev.sessionId; task.session_id = ev.sessionId; }
         if (ev.toolUse) {
-          if (ev.toolUse.file) files.add(ev.toolUse.file);
+          // files_changed 记「改过什么」不是「碰过什么」：只读工具（Read/Grep/Glob…）带 file 也不进。
+          // 判据见 executors/file-tools.ts；progress 不受影响，仍如实回显最近一次工具调用。
+          if (ev.toolUse.file && isFileMutatingTool(ev.toolUse.name)) files.add(ev.toolUse.file);
           patch.progress = `${ev.toolUse.name} ${ev.toolUse.file ?? ""}`.trim();
           patch.files_changed = [...files];
         }

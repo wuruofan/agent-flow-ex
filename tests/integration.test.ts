@@ -91,6 +91,8 @@ if (mode === "hang") {
   }
 } else {
   emit({ type: "system", subtype: "init", session_id: "sid-ok-" + process.pid });
+  // 真实 agent 每一步都会先 Read：这条只读事件不得进 files_changed（回归护栏）
+  emit({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/tmp/fake-readonly.txt" } }] } });
   emit({ type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/tmp/fake.txt" } }] } });
   emit({ type: "assistant", message: { content: [{ type: "text", text: "all done" }] } });
   emit({ type: "result", subtype: "success", result: "all done", is_error: false });
@@ -175,6 +177,16 @@ suite("integration: full task lifecycle", () => {
     expect(await waitForTerminal(id)).toBe("completed");
     const final = status({ task_id: id }) as { status: string; result?: string };
     expect(final.result).toContain("all done");
+  }, 10_000);
+
+  // files_changed 的语义是「改过什么」，不是「碰过什么」。fake-agent 每轮先 Read 一个它从不写的
+  // 文件（/tmp/fake-readonly.txt），只 Write /tmp/fake.txt —— 旧实现把 Read 也塞进 Set，此断言必红。
+  it("files_changed 只记改动过的文件，Read 过的文件不算", async () => {
+    const r = await submit({ prompt: "hello", project_path: home });
+    const id = (r as { task_id: string }).task_id;
+    expect(await waitForTerminal(id)).toBe("completed");
+    const t = openStore(join(home, "tasks.db")).getTask(id) as { files_changed: string[] };
+    expect(t.files_changed).toEqual(["/tmp/fake.txt"]);
   }, 10_000);
 });
 
