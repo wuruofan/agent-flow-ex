@@ -33,6 +33,16 @@ agent_created: true
 
 调用 `agent_flow_status`（不带 `task_id`）列出活跃任务。若存在 running/queued 任务且与本次 `project_path` 相同 → 遵守铁律 2：等待终态、换目录或向用户确认。不同目录的任务可并行，不受影响。
 
+**用户问「能不能一起派 N 个任务 / 让 worker 连续跑」时，先分两类，别混为一谈：**
+
+- **批量连发（N 个任务之间没有复核）→ 不能。** 理由可查：`agent_flow_submit` **没有批量/链式字段**（只有 `prompt` / `project_path` / `profile` / `timeout_sec` / `continue_of`），"一起派"只能是连发 N 个；而同 `project_path` 又禁止并发 ⇒ 同仓任务本来就会串行化，**付了批量的代价却拿不到并行收益，只是把中间的 review 闸门拆掉**。闸门正是缺陷的唯一发现点（9/21 实测三例：spec 内部断言数自相矛盾——写工单时才发现、假参数、以及"0 fail"其实是沙箱有 `ps` 的环境依赖），批量派发会把每一条都变成 worker 的自报。另两条：串行时**任务 2 的基线 = 任务 1 未复核的产物**（缺陷在 1 与假回归在 2 无法区分）；待核报告**三份一起核并不比逐个核便宜**，却失去了在下一任务开始前用 `continue_of` 反问的机会。
+- **有人值守的连续推进（等终态 → 复核 → 按置信度决定是否派下一个）→ 可以**，见下面「会话内定时等待」一节。
+- **真正自洽的批量条件**：文件面互不相交 + 无输出依赖 + 各自带可执行判别器，且每个任务之间**必须提交**——按此标准绝大多数"后续任务"不成立，逐个派更省。
+
+**别用"历史上没发生过"论证"没有需求"**（9/23 自查并撤回的一个循环论证）。历史 66 个任务的执行区间**零重叠**（同 `project_path` 0 对、跨全部 0 对），但零重叠正是并发禁令的产物，拿它反推"无并行需求"是循环论证。改用不受禁令影响的判据重测 51 个连续任务对（问的是"事后看是否本可并行"）：**文件面有重叠 69%**（最多重叠 11 个文件）、prompt 无前序依赖信号 73%、间隔 ≤60min 占 29%，**三条同时成立仅 2/51 ≈ 4%**。⇒ 结论方向没变但根因换了：**阻碍并行的是任务本身的性质，不是纪律**——一个 plan 拆出的 Task 1/2/3 天然落在同一片代码上。**杠杆在派发前的任务分解（拆成文件面不相交的任务），不在调度器**；调度器层面的并行加上也用不上。
+
+**并行 / worktree 隔离的评估结论（9/23，结论：先别上）**：worktree **不需要改 agent-flow-ex 一行代码**（`project_path` 已是任意目录，`submit.ts:78/80` 只校验 `isDirectory`），但有两个 P0：① **工单里的绝对路径全部失效**——派发前自检清单第 1/2/4 项都靠绝对路径写进 prompt，进 worktree 后全变成 `/tmp/af-*/…`；且 `files_changed` 存的是以 `project_path` 为前缀的绝对路径，复核时 `git diff` 对不上，需要前缀翻译。② **未提交工作不进 worktree**——HEAD 常在 WIP 分支、工作树常脏 ⇒ worktree 基线 ≠ 实际状态，是"任务 2 没有基线"的放大版。另有 P1：gitignore 产物缺失（motelet 有 6 处 `node_modules`，根 385M，每个 worktree 要么重建 6 处软链要么重装）、回流 merge 冲突。**没有明确收益场景前不要上 worktree**；真要上，先手动 worktree 派一个真实任务，实测那两条 P0 是否可控。
+
 ### Step 2 — 拼自包含 prompt
 
 按 `references/prompt-templates.md` 的模板拼装，核心字段：
@@ -120,6 +130,76 @@ agent_created: true
 
 任务卡死/派错时：`agent_flow_cancel({ task_id })`。running 任务会 SIGTERM 级联杀进程组；已终态任务幂等返回当前状态。
 
+## 会话内定时等待（有人值守的连续推进，可选）
+
+**用途**：把「等终态 → 复核 → 派下一个」这条链路里的**空等**自动化，但**不拆掉复核闸门**。飞书通知的是人，而复核需要人和主 agent 同时在场——这一节补的就是最后一公里。9/23 用户确认采用此形态（形态 A）。
+
+与 Step 1 反对的"批量连发"的区别：这里**一次只有一个任务在跑**（铁律 2 仍生效），且每个任务之后仍有复核。它省掉的是"用户回来触发"，不是复核本身。
+
+**为什么必须是后台进程、而不是会话内轮询**（设计红线，不是风格偏好）：会话内每轮询一次就是一次完整 API 往返，而**一次往返要把整段会话上下文重新发一遍**。所以轮询成本 ≈ **(任务时长 ÷ 轮询间隔) × 整个会话**，与「状态行有多长」毫无关系 —— 中位 22min 的任务按 60s 轮询 ≈ **22 次全量重放**，p75（39min）≈ 39 次。它同时还占住会话，等待期间用户没法跟主 agent 说话。⇒ 会话内轮询**两头都输**：既贵，又丢掉了「唤醒后带着上下文继续」这个最该保住的东西。
+
+要用 `scripts/wait-task.mjs` 起**后台进程**：等待发生在独立进程里，模型完全不参与 ⇒ **等待期间成本精确为零**，唤醒时**只发生一次**上下文重放，且这次重放落在**原会话**里（前序任务的事实、当前 plan 的约束、用户期间说过的话都还在）。
+
+```bash
+node --disable-warning=ExperimentalWarning \
+  /Users/meow/workspace/agent-flow-ex/skills/agent-flow-dispatch/scripts/wait-task.mjs \
+  <task_id> --report-out /tmp/<task_id>.report.md
+```
+
+⚠️ `--disable-warning` 是 **node 自己的 flag，必须放在脚本路径之前**。放到脚本后面会被参数解析器当成未知选项、以 exit 4 退出（9/23 实测踩到）。
+
+以 `run_in_background` 方式启动，**不要**前台跑。
+
+**为什么这样可行（已实测）**：
+
+- **能等多久：三层，只有中间那层是脚本的事**（9/23 查清）：
+  - **工具层 —— 后台进程不会被 Bash 调用的 timeout 杀掉**。实测：带显式 600s timeout 的探针仍活到 700s（task vXyTDb，`sleep 700` 跑满并落盘）；不带 timeout（走 120s 默认）的探针 mvr3kW 也已连续打点越过 150s（仍在跑）。⇒ 脚本的寿命由它自己决定，不由工具层决定。
+  - **脚本层 —— `--max-wait-sec`，默认由任务自己的 `timeout_sec` 推导**：`3 × timeout_sec + 90 + 120`。依据是 runner 的真实上界：每次尝试**各自计时**（`runner.ts:133` 的 `setTimeout(..., timeout_sec*1000)` 包在 `runAgent` 内），瞬时错误最多重试 3 次、退避 30s/60s（`runner.ts:24-26`），而**真超时本身不重试** ⇒ 任务不可能活过 `3 × timeout_sec + 90s`。等到比这再往后 2 分钟，超时才变成**有信息量的信号**（"runner 活过了它自己允许的最坏情况，多半是没 finalize 就死了"），而不是噪音。`--max-wait-sec 0` = **永不放弃**。真实例：`timeout_sec=5400` 的任务 → 预算 `16410s`（已在真实任务上验证输出 `MAX_WAIT_SEC=16410`）。
+  - **任务层 —— 每个任务都会自己结束**：runner 一定 finalize 到 `completed` / `failed` / `needs_input`，`queued` 也会被立刻 spawn 的 runner 认领。唯一能永久停在 `running` 的情形就是 **runner 未 finalize 而死** —— 那正是上面这个推导预算要抓的东西。
+- **超时后不会自动再等**（这是刻意的）：脚本 exit 2 就结束，**重起等待 / `cancel` / 重派由主 agent 决定** —— 只有主 agent 知道该等还是该放弃。而按上面的推导预算，超时本身已经是「可能卡死」的信号，不该无条件续等。要"等到天荒地老"就显式传 `--max-wait-sec 0`。
+- 等待期间**不占会话、不消耗 token**；进程在**「终态 或 需要我」**时退出 → **自动唤醒我**（后台任务完成会通知）。
+- **被唤醒的两种状态**（9/23 修）：`WAIT=terminal`（exit 0）与 `WAIT=needs_input`（**exit 5**）。后者**不是终态**（答复后任务回到 `running`），但 worker 已经停下等答复，**只有我能让它继续**。早期版本把它当「继续等」：判别性实测中，一个已经在问问题的任务把 30s 时钟等满才退出，默认情形下就是**白等 2 小时再报一个无用的 `timeout`**，恰好把最该被唤醒的那一刻吞掉。
+- 终态直接给出复核所需的全部字段：`STATUS` / `ELAPSED_SEC` / `FILES_CHANGED` / `LOG_PATH` / `REPORT_PATH` / `REPORT_CHARS`，外加一个**自带的报告摘要**（见下一小节）。
+- **报告提取已内置，覆盖两种 executor 的日志形状**：claude 的 `type=="assistant"` + `message.role=="assistant"` + `message.content[]`，以及 opencode 的扁平 `{"type":"text","text":…}`（`executors/opencode.ts:45-47`）。claude 侧两道过滤缺一不可——compaction 摘要挂在 `role:"user"` 上、可能是报告的几十倍长（`task_mu9jj2zd_9b3341`：摘要 12 936 字符 vs 终报 3 322 字符）。**9/23 修**：此前只认 claude 形状，opencode 任务会**静默返回空串**（同一份报告文本实测：claude 440 字符 / opencode 0），已补齐并加守卫。
+- 退出码：`0` 终态 / `5` **需要我（needs_input，附 `QUESTION`）** / `2` 超时（含 `--once` 查到但未终态）/ `3` 无此任务或 DB 不可读 / `4` 用法错。只想查一次状态时加 `--once`。
+
+**终态下实际能拿到什么（9/23 逐类真实任务验证）**：
+
+| `STATUS` | `ERROR=` | 报告（`REPORT_*`） | 实测例 |
+|---|---|---|---|
+| `completed` | 无 | **完整报告**——取自日志，**不受** DB `result` 那道 4012 字符截断（`trunc(s, 4000)` + `…(truncated)`）影响 | `task_mtla69fx_3872f3` → 11 461 字符的正式报告（而 DB `result` 只有 401 字符，是收尾语） |
+| `failed`（runner 超时） | `timeout after <N>s (round R)` | **可能为空或只是中途片段，绝不是结论** | 三个真实超时任务：`REPORT_CHARS` = **0 / 230 / 278** |
+| `failed`（执行错误：429 / 529 / 退出码非 0） | 完整错误文案 | **同上**；片段甚至可能是 worker 的中间推理 | `task_mu3tojte_7d2fa8` → 237 字符是它思考“fixture 为何不触发”的推理，不是报告 |
+| `cancelled` | 无（`cancel` 不写 `error`） | 近乎空 | `task_mtdu655x_5b4564` → 11 字符 |
+
+⇒ **`failed` / `cancelled` 时以 `ERROR=` 为主信息**；`REPORT_TEXT` / `REPORT_HEAD` 只是「死前写到哪」的残留，**不要当终报去复核**（复核 5 问在 failed 上没有对象）。另外 `REPORT_CHARS=0` **不等于**「worker 什么都没说」——也可能是日志里根本没有 assistant 文本块（`task_mtuu3i3h_46139d` 即如此，超时时零输出）。
+
+**省 token 的读法（9/23 实测）**：
+
+- **等待期间零 token** —— 脚本是独立进程，模型不参与；完成通知也**只带 stdout 的文件路径、不带内容**（实测探针 YvERVF：300 行 / 21k 字符的输出，通知仍只有约 200 字符）。⇒ **唤醒之后读什么**才是唯一的成本项。
+- `WAIT=needs_input` 时**不给 digest**（QUESTION 就是要的信息），但仍会落 `REPORT_PATH`，需要看「已经做到哪了」时再读。
+- **默认只读脚本 stdout，别急着读 `REPORT_PATH`**。脚本自带摘要，按报告长度自动选形态：
+  - `REPORT_OUTLINE` —— 章节结构（几十 token）。一眼看出报告有没有缺掉承诺的小节。
+  - `REPORT_TEXT` —— 报告 **≤1200 字符**时**直接内联全文**，此时**完全不需要读文件**（内联与读文件的 token 等价，但省一次工具调用）。
+  - `REPORT_HEAD` —— 报告 **>1200 字符**时给前 700 字符（通常已含变更清单与验收数字）。
+  - 实测：5242 字符的报告，stdout 只占 1476 字节（**23%**）；且 digest 里那行 `git diff --numstat` 的实算数字，正是 5 问要核的东西。
+- **只有摘要留下真实疑点时**才读 `REPORT_PATH`，且**读切片不读全文**（用 `grep -n` 定位，或用 Read 的 offset/limit 只取相关段）。
+- **为什么这条重要**：报告全文一旦进入主上下文，**后续每一轮都会重复计费**。一个 5000 字符的报告若后面还有 10 轮，实际成本是 5 万字符量级，远超读它那一次。digest 挡掉的正是这一块。
+- **不要把复核（更不要把唤醒）外包给 subagent**。那会丢掉最贵的东西：唤醒之所以值钱，正是因为主 agent 带着**前序任务的事实 + 当前 plan 的约束 + 用户期间说过的话**回来判断（9/23 用户明确要求这条不能省）。subagent 只有 `REPORT_PATH` 和一句指令，它的结论不能替代这个判断。只在一种窄场景下可用：疑点**纯局部**（如「这个数字和文件里对得上吗」）且**不涉及任何前序依赖** —— 即便如此，结论仍需主 agent 自己确认后才算闭环。
+
+**被唤醒后必须走的流程（这就是闸门，不许省）**：
+
+1. **先看 `WAIT=`**：
+   - `WAIT=needs_input`（exit 5）→ 任务**没结束**，worker 在等答复。读 `QUESTION`（完整问题在 `agent_flow_status` 的 `question`）→ **用本会话上下文去回答**：能自己答就直接 `agent_flow_submit({ continue_of: <task_id>, prompt: <答案> })`；需要用户拍板（选项取舍之类）则停下问用户 → 答复后**对同一 task_id 重新起一次 wait-task**（任务已回到 `running`）。
+   - `WAIT=terminal`（exit 0）→ 走下面 2–4 步。
+2. 读 `REPORT_PATH` 拿**完整**报告（不经过 `agent_flow_status`，所以没有截断问题），按 `references/confidence-check.md` 走 5 问 + 置信度三档分级；
+3. **高置信度** → 报变更摘要 + commit（若整个任务序列已作为一个 plan 预先批准，则直接 commit、**不 push**）→ 起下一个任务，回到 Step 1 并发检查；
+4. **中/低置信度** → **停下来问用户**，不要自动派下一个。低置信度的典型形状：自报数字/行号定位不到证据、报告被截断、`REPORT_CHARS=0`、项目根出现 `HANDOFF.md`（worker 预算用尽）。
+
+**为什么不做全自动连跑**：那会把闸门从"人"降级为"主 agent 的自动判断"，而三类真实缺陷（spec 断言自相矛盾、假参数、"0 fail"实为沙箱有 `ps`）**全是在人工复核窗口里抓到的**。形态 A 只把**触发者**从"用户回来"换成"主 agent 自动醒来"，判断权仍在复核这一步。
+
+**解除 commit 阻塞**：连跑会被「commit 需确认」卡住。把**整个任务序列**（含每个任务各自的验收标准）预先作为一个 plan 交用户批准，之后中途 commit 直接执行、不 push —— 这符合既有规范「已确认 plan 内的 commit 直接执行」。没有这一步，连跑在每个任务之间仍要停一次。
+
 ## 状态机速查
 
 ```
@@ -127,6 +207,8 @@ queued → running → needs_input →(continue_of)→ running →(≤5 轮)→ 
                           └───────────────────────────┘
 cancelled ← 任意非终态可取消
 ```
+
+> 「超时」是两个**不同**的东西，看到时先分清：**runner 层超时**落成 `failed` + `ERROR=timeout after <N>s` —— 任务**真的结束了**，报告多半是空的；**脚本层超时**是 `WAIT=timeout`（exit 2）—— 任务**还在 `running`**，意味着 runner 过了它自己允许的最坏情况仍未 finalize，多半已经死了。
 
 ## 排错
 
@@ -136,10 +218,12 @@ cancelled ← 任意非终态可取消
 | 任务 `failed`，`error: failed to spawn runner … ENOENT` | executor `bin` 解析失败（裸名 + PATH 找不到）→ 改 `config.json` 为绝对路径 |
 | 飞书不推送 | `notify.dry_run` 还是 `true`；或 `FEISHU_WEBHOOK_URL` 不在 `.env` / server 环境 |
 | `{env:VAR}` 报 not found | 对应密钥缺在 `$HOME/.agent-flow-ex/.env`，补上后重启 MCP server |
-| **`agent_flow_status` 的 `result` 只给到一半**（长报告在句子中间断掉、承诺的小节没出现） | **不要重派、不要据此猜结论**。全文落在 `~/.agent-flow-ex/logs/task_<task_id>.jsonl`（每行一个 JSON）。抽法：逐行 `json.loads` → 递归收集 `{"type":"text"}` 的 `text`，**且只收 `role == "assistant"` 的块** → **先打印每块的字符数**，最终报告是其中最长的那块（**别盲取最后一块**：实测 T0 报告是第 2 块、阶段 2 是第 18 块）。**按 role 过滤是必须的，不是可选的**：被压缩（compact）过的任务日志里**最长的文本块是 compaction 摘要，不是报告** —— `task_mu9jj2zd_9b3341` 实测：摘要 12 936 字符（内容以 `This session is being continued from a previous conversation…` 开头）挂在 **`role: "user"`** 上，而 23 个 `role: "assistant"` 文本块才是 worker 自己的叙述与终报（终报 3 322 字符 = **最后一块**，条数比 23∶1）。⇒ 不按 role 过滤，就会把"继续上次工作"的摘要当成交付报告来复核（本会话真踩到过）。9/20 一天踩了三次（11 088 字符的报告 MCP 只回一半）。一段可直接用的提取：`/Users/meow/.workbuddy/binaries/python/versions/3.13.12/bin/python3 -c` 里做上面的 walk，把最长块写到 `/tmp/t<stage>_report.md` 再 `Read`。|
+| **`agent_flow_status` 的 `result` 只给到一半**（长报告在句子中间断掉、承诺的小节没出现） | **不要重派、不要据此猜结论**。全文落在 `~/.agent-flow-ex/logs/task_<task_id>.jsonl`（每行一个 JSON）。抽法：逐行 `json.loads` → 递归收集 `{"type":"text"}` 的 `text`，**且只收 `role == "assistant"` 的块** → **先打印每块的字符数**，最终报告是其中最长的那块（**别盲取最后一块**：实测 T0 报告是第 2 块、阶段 2 是第 18 块）。**按 role 过滤是必须的，不是可选的**：被压缩（compact）过的任务日志里**最长的文本块是 compaction 摘要，不是报告** —— `task_mu9jj2zd_9b3341` 实测：摘要 12 936 字符（内容以 `This session is being continued from a previous conversation…` 开头）挂在 **`role: "user"`** 上，而 23 个 `role: "assistant"` 文本块才是 worker 自己的叙述与终报（终报 3 322 字符 = **最后一块**，条数比 23∶1）。⇒ 不按 role 过滤，就会把"继续上次工作"的摘要当成交付报告来复核（本会话真踩到过）。9/20 一天踩了三次（11 088 字符的报告 MCP 只回一半）。一段可直接用的提取：`/Users/meow/.workbuddy/binaries/python/versions/3.13.12/bin/python3 -c` 里做上面的 walk，把最长块写到 `/tmp/t<stage>_report.md` 再 `Read`。**更省事的做法：`scripts/wait-task.mjs <task_id> --once --report-out <path>`** —— 已内置同一套提取，且覆盖 claude / opencode 两种日志形状，见「会话内定时等待」。|
 | **要回读「工单正文」而不是报告**（核对某阶段当初派了什么 / 查 task_id ↔ 阶段的对应） | 工单是 JSONL 的**第一条**记录，形状 `{"type":"user_prompt","round":…,"text":"…"}` —— **顶层 `text` 字段**，**不是** `message.content`（后者是 assistant 侧文本块的形状）。字段用错会**静默拿到空串**：9/20 实测按 `type=="user"` + `message.content` 抽 12 个文件全空，差点误判成"日志没存工单"。另：`task_id` 带随机后缀 + 阶段号只写在工单正文里 ⇒ 想知道「阶段 N 是哪个 task_id」只能这样回读，不要凭记忆写进 spec。|
 
 ## Resources
 
+- `scripts/wait-task.mjs` — 等待任务到终态**或需要我（needs_input）**并提取完整报告（后台运行，不受单次 Bash 600s 上限约束）；退出码 0/2/3/4/5。用法与唤醒后的复核流程见「会话内定时等待」。
+- `scripts/wait-task.test.mjs` — 上者的隔离验证（33 项断言，自建合成 `AGENT_FLOW_HOME`，不碰真实 tasks.db、不发飞书）。**改过 `wait-task.mjs` 就重跑它**：`node skills/agent-flow-dispatch/scripts/wait-task.test.mjs`。每条断言都编码了一个真实踩过的错：needs_input 被当成"继续等"（时钟等满才退、报无用 timeout）／取最长文本块会拿到 compaction 摘要而非报告／digest 阈值低于脚本自身固定开销时反而比原报告更贵。已做变异验证：清空 `ACTIONABLE` 后该测试 9 项转红。
 - `references/prompt-templates.md` — 派发工单 / needs_input 答复 / 只读评审 三类提示词模板。
 - `references/confidence-check.md` — 收到 worker 终态报告后的防假阳性 5 问 + 置信度三档分级 + 采信前的十个机械核对（git 数改动 / 重量行为断言 / 检查 plan 是否偏离消费方 / 测试结论先对齐沙箱 / 「无输出」类验收自己重跑 / 接口字段逐条对测试 / 「0 fail」必须附非零测试数 / 「结构上不可能」类断言用探针走完整路径 / plan 断言表与测试名对表 / 计数先定口径、按结构字段数）+ 把交付按 Task 边界落成 commit 时的文件重叠规则 + 「这条断言在旧代码上会失败」要自己用最小 mutation 跑出来（含基线测量的文件级 cp 法）+「plan 步骤本身不可满足时先修 plan，不要改 worker 已正确的代码」。
