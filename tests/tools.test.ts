@@ -77,6 +77,24 @@ describe("submit", () => {
     expect(store.getTask(id)?.rounds).toBe(2);
     expect(store.getTask(id)?.status).toBe("running");
   });
+  it("warns when same project_path already has an active task", async () => {
+    const first = await submit({ prompt: "a", project_path: home });
+    const firstId = (first as { task_id: string }).task_id;
+    const second = await submit({ prompt: "b", project_path: home });
+    expect(second).toMatchObject({ status: "queued", rounds: 1 });
+    const w = (second as { warning?: string }).warning;
+    expect(w).toContain(firstId);
+    expect(w).toContain("queued");
+  });
+  it("no warning when the project_path has no other active task", async () => {
+    const other = mkdtempSync(join(tmpdir(), "afex-other-"));
+    try {
+      const r = await submit({ prompt: "a", project_path: other });
+      expect(r).not.toHaveProperty("warning");
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
   it("returns error and marks task failed when async spawn fails (P1-3)", async () => {
     // 让 mock 模拟"spawn 失败"：onSpawnError 立即被调用，传错信息
     mockedSpawn.mockImplementationOnce((_id: string, onSpawnError?: (e: Error) => void) => {

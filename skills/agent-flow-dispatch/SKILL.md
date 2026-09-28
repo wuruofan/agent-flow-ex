@@ -106,7 +106,7 @@ agent_created: true
 | `timeout_sec` | | 单轮超时秒数；缺省 3600。**按「工单粒度与预算」定档**：实现单 3600；验证/全量回归型单 5400–10800。注意真超时**不重试**（`runner.ts` `if (outcome.timedOut) break`），预算宁可有富余 |
 | `continue_of` | | 仅续跑 `needs_input` 任务时填目标 `task_id`，此时 `prompt` 填对该任务问题的答复 |
 
-返回 `{ task_id, status, rounds }` 或 `{ error }`。
+返回 `{ task_id, status, rounds }` 或 `{ error }`；成功结果可能带可选 **`warning`** 字段（9/28 加）：同 `project_path` 已有活跃任务时返回——这是铁律 2 的**被检查版本**，出现时不要无视，停下向用户确认或等前序任务终态。
 
 ### Step 4 — 提交后
 

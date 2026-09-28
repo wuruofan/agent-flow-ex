@@ -14,7 +14,9 @@ export interface SubmitArgs {
   timeout_sec?: number;
 }
 
-export type SubmitResult = { task_id: string; status: string; rounds: number } | { error: string };
+export type SubmitResult =
+  | { task_id: string; status: string; rounds: number; warning?: string }
+  | { error: string };
 
 /**
  * 等一小段时间（默认 80ms）让异步 spawn 错误浮现。
@@ -82,6 +84,14 @@ export async function submit(args: SubmitArgs): Promise<SubmitResult> {
     return { error: `project_path "${project_path}" not accessible` };
   }
 
+  // ---- 同目录活跃任务警告：把"同目录禁止并发"从纪律变成被检查的事实 ----
+  // 不阻断（合法场景由调度方判断，如刻意接续工作），只随结果带出 warning 让调度方看见。
+  const sameDirActive = store.listActive().filter((t) => t.project_path === project_path);
+  const warning = sameDirActive.length
+    ? `project_path "${project_path}" already has ${sameDirActive.length} active task(s), e.g. ` +
+      `${sameDirActive[0].id} (${sameDirActive[0].status}); same-directory tasks share one working tree and can clobber each other`
+    : undefined;
+
   const id = `task_${Date.now().toString(36)}_${randomBytes(3).toString("hex")}`;
   store.createTask({
     id, prompt: args.prompt, project_path, executor: profile.executor, profile: profileName,
@@ -92,5 +102,7 @@ export async function submit(args: SubmitArgs): Promise<SubmitResult> {
   if (pid !== null) store.patch(id, { pid });
   const err = await spawnError;
   if (err) return { error: `failed to spawn runner for ${id}: ${err}` };
-  return { task_id: id, status: "queued", rounds: 1 };
+  return warning
+    ? { task_id: id, status: "queued", rounds: 1, warning }
+    : { task_id: id, status: "queued", rounds: 1 };
 }
