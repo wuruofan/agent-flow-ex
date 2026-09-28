@@ -34,12 +34,39 @@ agent CLI (真实 claude / opencode) ── 事件流 ──▶ 终态 + 飞书�
 - Node.js **>= 22.5**
 - 本地已安装要用的 agent CLI（`claude` 或 `opencode`）
 
-## 安装
+## 安全须知
+
+worker 以 agent CLI 的 `--dangerously-skip-permissions` 模式运行（无二次确认）。请在**自己的机器、可信的项目目录**上使用；派发任务前想清楚你给了 worker 什么权限。
+
+## 快速开始
 
 ```bash
-git clone <repo> && cd agent-flow-ex
+npm i -g agent-flow-ex    # 或免安装：npx agent-flow-ex@latest init
+agent-flow-ex init        # 交互式配置：探测 CLI、收集密钥、生成 config + .env
+```
+
+`init` 结束时会**直接打印** MCP 注册片段，把它拷进你的 MCP 客户端配置即可（WorkBuddy 为 `~/.workbuddy/mcp.json`）：
+
+```jsonc
+{
+  "mcpServers": {
+    "agent-flow-ex": { "command": "agent-flow-ex" }
+  }
+}
+```
+
+> 用 npx 免安装形态：`{ "command": "npx", "args": ["-y", "agent-flow-ex@latest"] }`。
+> 注册后需在客户端里信任/启用该 server（首次接入通常要重启或手动连接）。
+
+之后在对话里说「把 X 派给后台 worker」即可；任务终态会推飞书通知（`init` 里配置过 webhook 的话）。
+
+## 安装（从源码，开发者路线）
+
+```bash
+git clone https://github.com/wuruofan/agent-flow-ex && cd agent-flow-ex
 npm install
 npm run build        # tsc → 生成 dist/
+npm run init         # 开发模式跑 init（tsx）
 ```
 
 ## 配置
@@ -130,14 +157,13 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
 
 ### 作为 MCP Server（stdio）
 
-把 server 注册进支持 MCP 的客户端（如 TRAE）。生产用预编译入口：
+生产形态（全局安装后）用 bin 名注册，**不要写绝对路径**（换机器/挪目录都不断）：
 
 ```jsonc
 {
-  "command": "node",
-  "args": ["/abs/path/agent-flow-ex/dist/server.js"],
+  "command": "agent-flow-ex",
   "env": {
-    "AGENT_FLOW_HOME": "/abs/path/to/your/home"
+    "AGENT_FLOW_HOME": "/abs/path/to/your/home"   // 可省，缺省 ~/.agent-flow-ex
     // 密钥不用放这里：server 启动时会自动读 $AGENT_FLOW_HOME/.env
   }
 }
@@ -146,7 +172,7 @@ FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
 开发模式（直接跑 TS，无需先 build）：
 
 ```bash
-npm run server      # = tsx src/server.js
+npm run server      # = tsx src/server.ts
 ```
 
 ### 手动跑单条任务（调试用）

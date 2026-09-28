@@ -260,7 +260,13 @@ export async function runInit(input: NodeJS.ReadableStream = process.stdin): Pro
 
     console.log("\nNext steps:");
     console.log(`  export AGENT_FLOW_HOME=${home}   (or set it in your MCP server env)`);
-    console.log("  npm run server   (or register dist/server.js as an MCP server)");
+    console.log("\nRegister as an MCP server (copy into your client's MCP config):");
+    console.log(JSON.stringify({
+      mcpServers: {
+        "agent-flow-ex": { command: "agent-flow-ex" },
+      },
+    }, null, 2));
+    console.log('  (installed via npx instead of -g? use { "command": "npx", "args": ["-y", "agent-flow-ex@latest"] })');
     console.log(`  optional: edit ${cfgPath} to tune model aliases / default env (e.g. API_TIMEOUT_MS)`);
   } finally {
     rl.close();

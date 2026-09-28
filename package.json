@@ -1,7 +1,9 @@
 {
   "name": "agent-flow-ex",
   "version": "0.1.0",
-  "private": true,
+  "description": "Schedule AI coding agents (Claude Code / OpenCode) as background tasks via MCP: detached runners, SQLite state machine, needs_input resume, Feishu notifications.",
+  "license": "MIT",
+  "private": false,
   "type": "module",
   "engines": {
     "node": ">=22.5"
@@ -9,12 +11,31 @@
   "bin": {
     "agent-flow-ex": "dist/server.js"
   },
+  "files": [
+    "dist",
+    "config.example.json",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuruofan/agent-flow-ex.git"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "claude-code",
+    "opencode",
+    "agent",
+    "task-runner",
+    "background-jobs"
+  ],
   "scripts": {
     "build": "tsc && node scripts/gen-build-meta.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "pretest:integration": "npm run build",
     "test:integration": "vitest run tests/integration.test.ts",
+    "prepublishOnly": "npm run build && npm test",
     "server": "tsx src/server.ts",
     "runner": "tsx src/runner.ts",
     "init": "tsx src/init.ts"
