@@ -31,6 +31,13 @@ worker（后台 agent CLI）不共享调度会话的任何上下文。以下模�
 ## Git Discipline
 不要执行 git commit / push / rebase / stash 等任何写操作；只修改工作区文件。完成后输出：改了哪些文件、每个文件改了什么、验证结果。
 
+**里程碑 commit 变体（仅当整个任务序列已作为 plan 预先批准时使用，替换上面的 Git Discipline）**：
+```
+## Git Discipline
+每完成一个「实现 + 验收都通过」的里程碑就地 git commit（遵循仓库 commit 风格；不 push、不 rebase、不 stash）。
+里程碑未过验收就不要 commit；被杀时未提交的工作按残留如实报告。
+```
+
 ## Deliverables
 以文字汇报：变更文件清单 + 摘要 + 测试/验证输出。不要创建 PR、不要发通知。
 ````
@@ -46,7 +53,7 @@ worker（后台 agent CLI）不共享调度会话的任何上下文。以下模�
   路径、它自认的未验项）才必须靠报告，被截掉就等于没交。9/19 实测：我的工单把 §6/§7 排在 7 节之末，
   卡片截断后正好只丢这两节——而 §1–§5 全是可自己复跑的数字。用「§0 结论 + 遗留」开篇，
   并给报告**写明长度上限（1–2 KB）**；长报告必被腰斩。
-- **时间预算不用写进工单**：runner 会自动把本任务 `timeout_sec` 注入 worker 行为契约（`src/prompt.ts`），worker 在预算用尽前（剩余 <15–20%）会自行把进度写进项目根目录 `HANDOFF.md`（**不 commit / 不 push**）。调度方收到 timeout 终态时**先看该文件**，据其判断残留与续做方式——这也让"未提交却已改到一半"的脏树自带说明。
+- **时间预算不用写进工单**：runner 会自动把本任务 `timeout_sec` 注入 worker 行为契约（`src/prompt.ts`），worker 在预算用尽前（剩余 <15–20%）会自行把进度写进项目根目录 `HANDOFF.md`（**不 commit / 不 push**）。调度方收到 timeout 终态时**先看该文件**，据其判断残留与续做方式——这也让"未提交却已改到一半"的脏树自带说明。注意 HANDOFF 只帮 salvage，**不防丢代码**；防丢靠工单粒度 + 里程碑 commit（见 SKILL.md「工单粒度与预算」与上面的 Git Discipline 变体）。
 
 ## 模板 B：needs_input 续跑答复
 
