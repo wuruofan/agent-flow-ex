@@ -119,6 +119,38 @@ export AGENT_FLOW_HOME="$HOME/.agent-flow-ex"   # 缺省即此；也可指向任
 | `defaults.profile` | `submit` 不指定 profile 时用的默认 profile（必须在 `profiles` 中存在）。 |
 | `defaults.timeout_sec` | 单轮超时（秒），超时 SIGTERM 杀掉 agent。 |
 
+### 上下文压缩：`[1m]` + `AUTO_COMPACT_WINDOW` + `PCT_OVERRIDE`
+
+worker 的上下文占用到阈值就会触发自动压缩（摘要掉早期对话）。**这三个变量必须成套设置**，否则达不到预期，甚至会适得其反。
+
+claude-code 对**未知模型**（如 MiniMax / DeepSeek 等第三方模型）会回落到 **200k** 窗口兜底，此时 `AUTO_COMPACT_WINDOW` 设多大都会被 `Math.min` 压回 200k，形同虚设。加 `[1m]` 后缀才能拿到 1M 窗口：
+
+| 变量 | 作用 | 缺了会怎样 |
+|---|---|---|
+| `ANTHROPIC_MODEL` 带 `[1m]` | 窗口 200k → **1M** | 窗口恒为 200k，下面的 window 失效 |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 压缩**工作窗口**（绝对值） | 阈值涨到 967k，逼近服务端上限，易撞顶失败 |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | 在工作窗口上的**百分比** | 退回内置默认（约 92%），压缩来得太晚 |
+
+阈值的计算方式（claude-code v2.1.x）：
+
+```
+window  = min(模型窗口, max(100k, AUTO_COMPACT_WINDOW))
+阈值    = min(window − 20000 − 13000, (window − 20000) × PCT%)
+```
+
+以 `AUTO_COMPACT_WINDOW=512000` + `PCT=90` 为例：`window=512000` → 阈值 ≈ **442,800 tokens**。
+
+| PCT | 512k 窗口下的阈值 |
+|---|---|
+| 70 | 344,400 |
+| 80 | 393,600 |
+| 90 | 442,800 |
+| 不设 | 479,000 |
+
+> **注意**：`~/.claude/settings.json` 的 `env` 块也会注入这些变量。agent-flow 传了 `HOME` 给子进程，claude 会自行读取该文件——**若那里设了同名 key，agent-flow 的 `profiles.<name>.env` 优先级更高**（仅当该 key 已在 profile 中显式设置）。想完全由 agent-flow 单点控制，就把两个变量都写进 profile env。
+
+**验证是否真的生效**：看任务日志 `result` 事件的 `modelUsage.<model>.contextWindow`——它反映模型窗口（带 `[1m]` 应为 `1000000`）；而**压缩工作窗口**不体现在该字段，要看日志里是否出现 `ran out of context`。
+
 ### `executors.<name>.bin`：绝对路径或裸命令名皆可
 
 `runner` 拉起 agent 时，会显式构造子进程环境，其 `PATH` 以 **`dirname(解析后的 bin)` + 系统目录** 组成（`src/agent-env.ts`）。`bin` 支持两种写法：
@@ -256,6 +288,7 @@ npm run typecheck                   # 仅类型检查
 - **任务 `failed`，`error: failed to spawn runner: … ENOENT`**：`bin` 用了裸名导致子进程 PATH 找不到 agent，改绝对路径（见上「重要」）。
 - **飞书不推送**：检查 `dry_run` 是否还是 `true`；检查 `.env` 里 `FEISHU_WEBHOOK_URL` 是否存在（或 server 进程环境是否已 `export`）。
 - **`{env:VAR}` 报错 `not found in process environment`**：对应密钥不在 `.env` 里，也没 `export` 到 server 进程环境。加到 `$AGENT_FLOW_HOME/.env` 后重启 server。
+- **任务频繁超时，且日志里反复出现 `ran out of context`**：上下文被反复压缩，agent 丢失状态后重复劳动。查压缩阈值配置（见上「上下文压缩」）——若 `ANTHROPIC_MODEL` 没带 `[1m]`，窗口会被锁在 200k；工单过大（工具调用 ≫150 次）也会撞阈值，应先拆单。
 
 ## 快速初始化（`init` 命令）
 
