@@ -59,4 +59,14 @@ describe("claude executor", () => {
     const resume = ex.buildCommand("/bin/claude", [], "sid-9");
     expect(resume).toEqual(["/bin/claude", "-p", "--output-format", "stream-json", "--verbose", "--resume", "sid-9"]);
   });
+// 2026-10-08 opencode e2e 回归：Node 的 spawn(bin, argv) 会**自己补**一个 argv[0]=bin，
+// 再把传入数组原样接在后面 ⇒ child 实收 [bin, bin, run, …]，bin 被夹带成子命令的第一个位置参数。
+// opencode 会把它当 prompt 吞掉 → 打 help、exit 1；claude 忽略位置参数所以长期潜伏。
+// runner 的职责就是 slice(1)；这里锁死「buildCommand 的输出必须以 bin 开头」这一契约，
+// 让 runner 的 slice(1) 永远安全。
+it("buildCommand 输出以 bin 开头（runner 会 slice(1) 后再 spawn）", () => {
+  const bin = "/bin/claude";
+  expect(ex.buildCommand(bin, [])[0]).toBe(bin);
+  expect(ex.buildCommand(bin, [], "sid-9")[0]).toBe(bin);
+});
 });

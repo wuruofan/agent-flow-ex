@@ -114,13 +114,25 @@ async function main(): Promise<void> {
     return new Promise((resolve) => {
       const files = new Set<string>(task.files_changed ?? []);
       const log = createWriteStream(task.log_path, { flags: "a" });
-      const args = executor.buildCommand(executorCfg.bin, executorCfg.extra_flags ?? [], task.session_id ?? undefined);
-      const child: ChildProcess = spawn(executorCfg.bin, args, {
+      // buildCommand 返回的完整 argv 含 bin 作为 [0]；spawn 的第一个参数**也**是 bin。
+      // Node 的 spawn 不会替换 argv[0]，只会补一个 —— 两者叠加，child 实际收到
+      // `[0]=bin(自身) [1]=bin [2]=run ...`，即 bin 被夹带成子命令的第一个位置参数。
+      // opencode 会把它当 prompt 吞掉 → 参数解析失败、打 help、exit 1（2026-10-08 e2e 实测）。
+      // claude CLI 忽略位置参数，所以这个 bug 一直潜伏、只有 opencode 暴露。
+      // 故这里必须切掉 argv[0] 再交给 spawn。
+      const fullArgv = executor.buildCommand(executorCfg.bin, executorCfg.extra_flags ?? [], task.session_id ?? undefined);
+      // 守卫：executor 若返回 [bin, bin, ...] 这类重复，去掉多余的前导bin（否则同样会被当位置参数）。
+      const argv = fullArgv[0] === executorCfg.bin ? fullArgv.slice(1) : fullArgv;
+      if (argv[0] === executorCfg.bin) {
+        log.write(JSON.stringify({ type: "_runner", event: "argv_guard", duplicate_bin: true }) + "\n");
+        argv.shift();
+      }
+      const child: ChildProcess = spawn(executorCfg.bin, argv, {
         cwd: task.project_path,
         env: buildAgentEnv(executorCfg.bin, profileEnv),
         stdio: ["pipe", "pipe", "pipe"],
       });
-      log.write(JSON.stringify({ type: "_runner", event: "spawn", argv: args, round: task.rounds, attempt, child_pid: child.pid }) + "\n");
+      log.write(JSON.stringify({ type: "_runner", event: "spawn", argv: fullArgv, round: task.rounds, attempt, child_pid: child.pid }) + "\n");
       child.stdin!.write(prompt);
       child.stdin!.end();
 
