@@ -36,7 +36,7 @@ agent CLI (真实 claude / opencode) ── 事件流 ──▶ 终态 + 飞书�
 
 ## 安全须知
 
-worker 以 agent CLI 的 `--dangerously-skip-permissions` 模式运行（无二次确认）。请在**自己的机器、可信的项目目录**上使用；派发任务前想清楚你给了 worker 什么权限。
+worker 以 agent CLI 的「跳过权限确认」模式运行（claude：`--dangerously-skip-permissions`；opencode：`--auto`），无二次确认。请在**自己的机器、可信的项目目录**上使用；派发任务前想清楚你给了 worker 什么权限。
 
 ## 快速开始
 
@@ -87,7 +87,7 @@ export AGENT_FLOW_HOME="$HOME/.agent-flow-ex"   # 缺省即此；也可指向任
 {
   "executors": {
     "claude":   { "bin": "/abs/path/to/claude", "extra_flags": ["--dangerously-skip-permissions"] },
-    "opencode": { "bin": "/abs/path/to/opencode", "extra_flags": ["--dangerously-skip-permissions"] }
+    "opencode": { "bin": "/abs/path/to/opencode", "extra_flags": ["--auto"] }
   },
   "profiles": {
     "minimax-3": {
@@ -111,9 +111,9 @@ export AGENT_FLOW_HOME="$HOME/.agent-flow-ex"   # 缺省即此；也可指向任
 | 字段 | 说明 |
 |---|---|
 | `executors.<name>.bin` | agent CLI 的**绝对路径**（见下方「重要」）。 |
-| `executors.<name>.extra_flags` | 拼到 agent 命令后的额外参数（如 `--resume` 之外的权限开关）。 |
+| `executors.<name>.extra_flags` | 拼到 agent 命令后的额外参数。权限开关按 executor 区分：claude 用 `--dangerously-skip-permissions`，opencode 用 `--auto`（`init` 会自动写对）。 |
 | `profiles.<name>.executor` | 引用 `executors` 里的某个 executor。 |
-| `profiles.<name>.env` | 传给 agent 子进程的环境变量；支持 `{env:VAR}` 占位符（见下）。 |
+| `profiles.<name>.env` | 传给 agent 子进程的环境变量；支持 `{env:VAR}` 占位符（见下）。**opencode 一般留空**（provider 由 opencode 自己的 `auth.json`/`opencode.json` 管理）；要给某个 profile 单独指定模型，写 `OPENCODE_CONFIG_CONTENT: "{\"model\":\"provider/model\"}"`——`extra_flags` 是 executor 级，多 profile 无法用它区分模型。另注意 `buildAgentEnv` 只给极简 `PATH`，worker 里的 shell 用不到 `/opt/homebrew/bin` 等，需要时在此显式补 `PATH`。 |
 | `notify.feishu_webhook_url` | 飞书机器人 webhook；支持 `{env:FEISHU_WEBHOOK_URL}` 占位符。 |
 | `notify.dry_run` | `true`（缺省）→ 只打印通知内容不真发；`false` → 真发。 |
 | `defaults.profile` | `submit` 不指定 profile 时用的默认 profile（必须在 `profiles` 中存在）。 |

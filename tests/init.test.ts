@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiKeyVarFor, buildConfig, DEFAULT_CLAUDE_ENV, presetEnv } from "../src/init.js";
+import { apiKeyVarFor, buildConfig, DEFAULT_CLAUDE_ENV, DEFAULT_EXTRA_FLAGS, presetEnv } from "../src/init.js";
 
 describe("presetEnv", () => {
   it("merges generic claude default env (API_TIMEOUT_MS) into every preset", () => {
@@ -49,5 +49,17 @@ describe("buildConfig", () => {
     expect(cfg.profiles.default.env).toEqual({ A: "1" });
     expect(cfg.notify.dry_run).toBe(true);
     expect(cfg.defaults.profile).toBe("default");
+  });
+  it("opencode executor 用 --auto（不是 claude 的 --dangerously-skip-permissions）", () => {
+    const cfg = buildConfig({
+      executor: "opencode",
+      bin: "/usr/local/bin/opencode",
+      profile: "oc",
+      env: {},
+      notify: { feishu_webhook_url: "{env:FEISHU_WEBHOOK_URL}", dry_run: true },
+      timeout_sec: 3600,
+    });
+    expect(cfg.executors.opencode.extra_flags).toEqual(DEFAULT_EXTRA_FLAGS.opencode);
+    expect(cfg.executors.opencode.extra_flags).toEqual(["--auto"]);
   });
 });

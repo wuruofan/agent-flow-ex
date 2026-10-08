@@ -6,7 +6,7 @@
     },
     "opencode": {
       "bin": "opencode",
-      "extra_flags": ["--dangerously-skip-permissions"]
+      "extra_flags": ["--auto"]
     }
   },
   "profiles": {

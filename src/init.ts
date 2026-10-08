@@ -162,10 +162,21 @@ export interface InitAnswers {
   timeout_sec: number;
 }
 
+/**
+ * 各 executor 的默认「无人值守」权限开关（语义相同、参数名不同）：
+ * - claude：`--dangerously-skip-permissions`
+ * - opencode：`--auto`（v1.18.33 的文档化开关；`--dangerously-skip-permissions` 虽仍被解析，
+ *   但未见于 `opencode run --help`，属未文档化兼容，不作为默认值）
+ */
+export const DEFAULT_EXTRA_FLAGS: Record<string, string[]> = {
+  claude: ["--dangerously-skip-permissions"],
+  opencode: ["--auto"],
+};
+
 /** 纯函数：答案 → config 对象。脱离 readline，便于单测与自校验复用。 */
 export function buildConfig(a: InitAnswers) {
   return {
-    executors: { [a.executor]: { bin: a.bin, extra_flags: ["--dangerously-skip-permissions"] } },
+    executors: { [a.executor]: { bin: a.bin, extra_flags: DEFAULT_EXTRA_FLAGS[a.executor] ?? [] } },
     profiles: { [a.profile]: { executor: a.executor, env: a.env } },
     notify: a.notify,
     defaults: { profile: a.profile, timeout_sec: a.timeout_sec },
