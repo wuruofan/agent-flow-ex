@@ -19,7 +19,10 @@ import type { AgentEvent, Executor } from "./types.js";
  *   只有最后一个 step 的 `part.reason === "stop"`。
  * - **没有终态 result 对象**（claude 有）：最终结果 = 最后一段 text。
  * - 字段命名：`sessionID`（驼峰）出现在**每一行**顶层；工具入参在 `part.state.input.filePath`。
- * - 错误：`error.data.message` / `error.data.statusCode`。
+ * - 错误：`error.name` + `error.data.{message,statusCode,isRetryable,responseBody,metadata}`。
+ *   实测样本（minimax 配额耗尽）：`{"type":"error","error":{"name":"APIError","data":{"message":
+ *   "当前已达到 Token Plan 用量上限。… (2067)","statusCode":429,"isRetryable":true,…}}}` ——
+ *   `statusCode` 是 **number**（不是字符串），`message` 是含平台错误码的完整长句。
  */
 export const opencodeExecutor: Executor = {
   name: "opencode",

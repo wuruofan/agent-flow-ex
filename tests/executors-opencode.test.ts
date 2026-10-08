@@ -45,11 +45,14 @@ describe("opencode executor", () => {
     expect(ev?.quotaWarning).toBeUndefined();
   });
 
-  it("error 带 statusCode=429 时映射 quotaWarning", () => {
+  it("error 带 statusCode=429 时映射 quotaWarning（真实捕获的 minimax 配额耗尽事件）", () => {
     const ev = ex.parseEvent(lines[6]);
     expect(ev?.result?.isError).toBe(true);
     expect(ev?.quotaWarning?.status).toBe(429);
-    expect(ev?.quotaWarning?.message).toContain("用量上限");
+    expect(ev?.quotaWarning?.message).toContain("Token Plan 用量上限");
+    // 真实 message 是完整长句（带平台错误码），飞书告警直接用它，不能被截断成关键词。
+    expect(ev?.result?.text).toContain("(2067)");
+    expect(ev?.sessionId).toBe("ses_sample0000003");
   });
 
   it("ignores non-json line", () => {
