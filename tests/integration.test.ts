@@ -6,8 +6,9 @@
 // - 模板字面量首字符直接是 #!：\n 会让 file/lspawn 看不到 shebang。
 // - profile.env.PATH 必须注入：buildAgentEnv 显式构造 PATH 不继承 process.env，
 //   而 `#!/usr/bin/env node` 需要 env 找到 node。
-// - bin=可执行文件本身，args=[]。fake executor 当前 buildCommand 把 bin 重复进 args 头部，
-//   用 Node + script 时会让 argv 边界出问题（独立可执行无此问题）。
+// - bin=可执行文件本身，args=[]。runner 会先 `slice(1)` 去掉 argv[0] 再 spawn（2026-10-08 修），
+//   所以这里不必再为「bin 被重复夹带进 argv」做规避；仍用独立可执行文件而非 `node script.cjs`，
+//   是为了避开 buildAgentEnv 自建 PATH 时对解释器查找的影响（见下一条）。
 // - FAKE_MODE & FAKE_PIDFILE 通过 profile.env 传到 agent 子进程。
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync } from "node:fs";
@@ -30,7 +31,12 @@ import { submit } from "../src/tools/submit.js";
 import { status } from "../src/tools/status.js";
 import { cancel } from "../src/tools/cancel.js";
 import { openStore } from "../src/store.js";
-import { killTree } from "../src/proc-tree.js";
+import { killTree, isPsAvailable } from "../src/proc-tree.js";
+
+// 依赖 `ps` 才能发现「逃逸孙进程」的用例：ps 不可用时（如 WorkBuddy Bash 工具的 Seatbelt 沙箱
+// 拒绝执行 setuid 的 /bin/ps）显式跳过，而不是以「假红」形式报错。详见 src/proc-tree.ts。
+const hasPs = isPsAvailable();
+const psRequired = hasPs ? it : it.skip;
 
 let home: string;
 let fakeAgent: string;
@@ -214,7 +220,7 @@ suite("integration: cancel cascades to agent process", () => {
 });
 
 suite("integration: cancel kills escaped descendant process", () => {
-  it("detached heartbeat spawned by agent stops after cancel (P0-2 regression)", async () => {
+  psRequired("detached heartbeat spawned by agent stops after cancel (P0-2 regression)", async () => {
     const pidfile = join(home, "agent.pid");
     const hbChildPidfile = join(home, "hb-child.pid");
     const hb = join(home, "hb.txt");

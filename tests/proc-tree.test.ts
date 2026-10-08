@@ -9,7 +9,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectDescendants, killTree } from "../src/proc-tree.js";
+import { collectDescendants, isPsAvailable, killTree } from "../src/proc-tree.js";
+
+// 依赖 `ps` 才能发现「逃逸孙进程」的用例：ps 不可用时（如 WorkBuddy Bash 工具的 Seatbelt 沙箱
+// 拒绝执行 setuid 的 /bin/ps）显式跳过，而不是以「假红」形式报错。详见 src/proc-tree.ts 的
+// isPsAvailable() 注释。跳过是诚实的：这项能力在该环境下确实无法验证。
+const hasPs = isPsAvailable();
+const psRequired = it.skipIf(!hasPs);
 
 const GCODE = `
 const fs = require("fs");
@@ -79,7 +85,7 @@ afterEach(() => {
 });
 
 describe("collectDescendants", () => {
-  it("finds descendants by ppid lineage even when detached (escaped) from the group", async () => {
+  psRequired("finds descendants by ppid lineage even when detached (escaped) from the group", async () => {
     home = mkdtempSync(join(tmpdir(), "afex-pt-"));
     const { root, sPidfile, gPidfile } = spawnTree(home, join(home, "hb.txt"));
     trees.push({ root, sPidfile, gPidfile, hb: join(home, "hb.txt") });
@@ -98,8 +104,29 @@ describe("collectDescendants", () => {
   });
 });
 
+// 2026-10-08：`collectDescendants` 原本对 ps 失败静默 catch → []，于是「逃逸进程没杀掉」与
+// 「没有逃逸进程」在调用方看来完全一样，cancel 照样报 cancelled。新增契约：降级必须可观测。
+describe("ps 降级可观测性", () => {
+  it("isPsAvailable() 与 collectDescendants 的降级状态一致（同一结论，不会一个说可用另一个说不可用）", () => {
+    // 主动跑一次快照，让内部状态确定下来
+    collectDescendants(process.pid);
+    const available = isPsAvailable();
+    expect(typeof available).toBe("boolean");
+    // ps 不可用 ⇒ 快照必然是空的（反之亦然）；两条路径不得互相矛盾。
+    if (!available) expect(collectDescendants(process.pid)).toEqual([]);
+  });
+
+  it("killTree 返回 treeComplete 标记降级，且 pid<=0 时不误报", () => {
+    const bad = killTree(0);
+    expect(bad.signalled).toBe(0);
+    expect(bad.treeComplete).toBe(false); // 未真正执行，不宣称完成
+    const bad2 = killTree(-1);
+    expect(bad2.signalled).toBe(0);
+  });
+});
+
 describe("killTree", () => {
-  it("kills the whole lineage including the escaped heartbeat process (heartbeat stops)", async () => {
+  psRequired("kills the whole lineage including the escaped heartbeat process (heartbeat stops)", async () => {
     home = mkdtempSync(join(tmpdir(), "afex-pt-"));
     const hbPath = join(home, "hb.txt");
     const { root, sPidfile, gPidfile, hb } = spawnTree(home, hbPath);
@@ -140,7 +167,7 @@ describe("killTree", () => {
 });
 
 describe("killTree with real runner group semantics", () => {
-  it("kills group leader (detached runner) plus its tree incl. escaped grandchild", async () => {
+  psRequired("kills group leader (detached runner) plus its tree incl. escaped grandchild", async () => {
     home = mkdtempSync(join(tmpdir(), "afex-pt-"));
     const hbPath = join(home, "hb.txt");
     const { root, sPidfile, gPidfile, hb } = spawnTree(home, hbPath, true); // R detached → 组 leader

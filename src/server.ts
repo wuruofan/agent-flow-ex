@@ -47,7 +47,10 @@ async function main(): Promise<void> {
 
   server.tool(
     "agent_flow_cancel",
-    "取消任务（状态感知、幂等）：running 杀整个进程组；已终态则原样返回当前状态。",
+    [
+      "取消任务（状态感知、幂等）：running 杀整个进程组；已终态则原样返回当前状态。",
+      "若返回带warning，说明进程树快照不可用（ps 被拒），组外逃逸的 agent 子进程可能残留。",
+    ].join("\n"),
     { task_id: z.string().describe("任务 id") },
     async (args) => json(cancel(args))
   );
