@@ -83,23 +83,47 @@ MCP 工具是「底层能力」，dispatch skill 是叠加在上面的**派发�
 同一目录为什么禁止并发、`needs_input` 怎么续跑、什么时候干脆别派（返工量小且强依赖当前会话上下文时，
 自己更快更准）。装了它，你只说「把 X 派给 worker」，它会按规范把任务拆好、检查并发、拼好 prompt 再提交。
 
+两条路线，按「你是使用者还是本仓库开发者」选一条，**不要两条都装**（目标路径会互相打架）。
+
+### 路线 A：`npx skills`（推荐给使用者，不依赖本地仓库）
+
+本仓库的 skill 遵循 [Agent Skills](https://github.com/agentskills) 开放规范（`SKILL.md` + `scripts/` + `references/`），
+因此可以直接用 Vercel 的 [`skills` CLI](https://www.npmjs.com/package/skills) 从 GitHub 装——**无需 clone、无需 `npm i -g agent-flow-ex`**：
+
+```bash
+# 先看这个仓库里有哪些 skill（dry-run，不落盘）
+npx -y skills add wuruofan/agent-flow-ex --list
+
+# 全局安装单个 skill
+npx -y skills add wuruofan/agent-flow-ex --skill agent-flow-dispatch -g -y
+```
+
+- 缺省安装到 `~/.agents/skills/`（用户级，**全局生效**，任何项目里都能用）。
+- 只给某一个宿主装（如只给 Claude Code）：去掉 `-g`，按 CLI 提示选目标。
+- 更新：`npx skills update -g`；已装列表：`npx skills list -g`。
+- ⚠️ 若你机器上 `~/.npm/_npx` 不可写，报权限错，加临时 cache：`npm_config_cache=/tmp/npm-cache npx -y skills add …`。
+
+### 路线 B：`install-skill.sh`（开发者路线，软链到本地仓库）
+
 ```bash
 ./scripts/install-skill.sh          # 默认装到 ~/.agents/skills + ~/.workbuddy/skills
 ./scripts/install-skill.sh ~/some/other/skills   # 或指定目录
 ```
 
 脚本把仓库里的 `skills/agent-flow-dispatch` **软链**到各宿主工具的用户级 skills 目录——
-它是仓库的软链，改了立刻生效、不会产生副本漂移。可重复执行（幂等：已指向正确位置会 skip；
+它是仓库的软链，**改完立刻生效、不会产生副本漂移**，适合边写 skill 边验证。可重复执行（幂等：已指向正确位置会 skip；
 若目标路径已有**实体目录**则会中止并提示手动处理，不会覆盖）。
+
+> 两条路线的取舍：路线 B 是**软链**，本地改了马上生效，但换台机器就没有；路线 A 是**实体副本**，
+> 能独立分发但要手动 `update`。同一目标目录只能有一种——若想从 A 切到 B（或反过来），
+> 先删掉旧的那份再装。
 
 **生效范围是全局的，不是当前仓库**：入口落在用户级 skills 目录（`~/.agents/skills`、`~/.workbuddy/skills`），
 WorkBuddy 会扫描这些路径，所以在任何项目里都能用。仓库里的 `./skills/` 是普通目录，**不是**项目级 skill 路径
 （那会是 `./.workbuddy/skills`），因此既不会只在本仓库生效，也不会与项目级 skill 冲突。
 
 > ⚠️ 默认目标**不含 Trae**：它的前端在后台任务结束时**不会开新 turn**，所以「派发完就等着收通知」在 Trae 上不成立，
-> 只能自己查 `status`。需要时用 `./install-skill.sh ~/.trae-cn/skills` 单独装。
->
-> ⚠️ 该脚本是**开发者路线**（依赖本地仓库路径），随 npm 包发布不适用——见下方「已知缺口」。
+> 只能自己查 `status`。需要时把目标目录显式传进去：`./install-skill.sh ~/.trae-cn/skills`（路线 A 则去掉 `-g`，按 CLI 提示选 Trae）。
 
 ## 安装（从源码，开发者路线）
 
@@ -379,9 +403,9 @@ npm publish --access public
 
 发布者需自备 npm 账号并 `npm login`（包名当前在公共 registry 上未被占用）。
 
-> ⚠️ **npm 包不含 dispatch skill**：`skills/` 与 `scripts/` 不在 `files` 白名单里，且 `install-skill.sh`
-> 依赖本地仓库路径（软链到 `<repo>/skills/…`），对 npm 用户不成立。要给 npm 用户装 skill，
-> 需要另做分发（随包带上 + 改成「复制」而非「软链」，或让 skill 走独立的 skills 市场）。
+> ⚠️ **npm 包不含 dispatch skill**：`skills/` 与 `scripts/` 不在 `files` 白名单里。
+> 但这已不再是分发缺口——skill 走 [Agent Skills](https://github.com/agentskills) 规范，
+> 使用者用 `npx skills add wuruofan/agent-flow-ex --skill agent-flow-dispatch -g -y` 从 GitHub 直接装（见「安装 dispatch skill」）。
 
 ## 后续（planned）
 

@@ -25,6 +25,11 @@
 #   ./install-skill.sh /path/a/skills /path/b  # explicit targets (overrides default)
 #   AGENT_FLOW_SKILL_TARGETS="~/.x/skills:~/.y" ./install-skill.sh   # env override
 #
+# This is the DEVELOPER route (symlink to a local clone). End users should install from
+# GitHub instead, which needs no clone and is the distribution path that works everywhere:
+#   npx -y skills add wuruofan/agent-flow-ex --skill agent-flow-dispatch -g -y
+# Don't install both into the same target dir — pick one, delete the other.
+#
 set -euo pipefail
 
 # Resolve repo root from this script: <repo>/scripts/install-skill.sh -> <repo>
