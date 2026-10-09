@@ -3,17 +3,25 @@
 # install-skill.sh — symlink the agent-flow-dispatch skill into AI-tool skill dirs.
 #
 # The skill has a single canonical source of truth at <repo>/skills/agent-flow-dispatch.
-# This script fans it out as symlinks into each tool's user-level skills directory,
-# mirroring the machine's existing convention (~/.agents/skills/* is symlinked from
-# ~/.workbuddy/skills, ~/.trae-cn/skills, ~/.claude/skills, ...).
+# This script fans it out as symlinks into each tool's user-level skills directory.
 #
-# Why only two dispatcher front-ends for now (WorkBuddy + Trae SOLO CN):
-# the actual workers are claude / opencode, so we cap the *host* tool set here and
-# do NOT recurse over an open-ended list. Add more by passing dirs on the CLI or via
-# AGENT_FLOW_SKILL_TARGETS.
+# Why symlinks and not copies: the skill is under active development. A copy would
+# drift the moment SKILL.md is edited; a symlink makes repo edits take effect
+# immediately with no sync step.
+#
+# Scope — the links land in USER-level skill dirs (~/.agents/skills, ~/.workbuddy/skills),
+# both of which WorkBuddy scans (verified against its path allowlist). So the skill is
+# visible from every project, not just this repo. The repo's own ./skills/ dir is NOT
+# a project-level skill path (that would be ./.workbuddy/skills), so it is never
+# picked up as a project-scoped skill and never shadows this install.
+#
+# Default targets: ~/.agents/skills (shared, tool-agnostic convention on this machine)
+# and ~/.workbuddy/skills. Trae is intentionally NOT a default: its front-end does not
+# open a new turn when a background task finishes, so "dispatch and get notified" does not
+# hold there — you'd have to poll status yourself.
 #
 # Usage:
-#   ./install-skill.sh                         # default: WorkBuddy + Trae
+#   ./install-skill.sh                         # default: ~/.agents/skills + ~/.workbuddy/skills
 #   ./install-skill.sh /path/a/skills /path/b  # explicit targets (overrides default)
 #   AGENT_FLOW_SKILL_TARGETS="~/.x/skills:~/.y" ./install-skill.sh   # env override
 #
@@ -30,11 +38,10 @@ if [ ! -f "$CANONICAL/SKILL.md" ]; then
   exit 1
 fi
 
-# Default host tool skill dirs (user-level). Workers are claude/opencode, so we
-# support these two dispatcher front-ends for now.
+# Default host tool skill dirs (user-level), most-shared first.
 DEFAULT_TARGETS=(
+  "$HOME/.agents/skills"
   "$HOME/.workbuddy/skills"
-  "$HOME/.trae-cn/skills"
 )
 
 # Targets: CLI args > AGENT_FLOW_SKILL_TARGETS env > defaults
@@ -79,4 +86,7 @@ for target_dir in "${TARGETS[@]}"; do
 done
 
 echo
-echo "Done. Verify: ls -la ~/.workbuddy/skills/$SKILL_NAME ~/.trae-cn/skills/$SKILL_NAME"
+echo "Done. Verify:"
+for t in "${TARGETS[@]}"; do
+  echo "  ls -la ${t/#\~/$HOME}/$SKILL_NAME"
+done

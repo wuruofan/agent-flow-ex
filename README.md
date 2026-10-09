@@ -58,7 +58,48 @@ agent-flow-ex init        # 交互式配置：探测 CLI、收集密钥、生成
 > 用 npx 免安装形态：`{ "command": "npx", "args": ["-y", "agent-flow-ex@latest"] }`。
 > 注册后需在客户端里信任/启用该 server（首次接入通常要重启或手动连接）。
 
+> ⚠️ **`command` 必须能被客户端找到。** 客户端拉起 MCP server 时**不一定带你的 shell PATH**，
+> 裸写 `agent-flow-ex` 或 `node` 在 PATH 受限的环境下会直接 `ENOENT`。已实测：`PATH=/usr/bin:/bin`
+> 下 `node` 与 `agent-flow-ex` 均找不到。若你用 nvm / homebrew / WorkBuddy 托管版 node，
+> 建议写**绝对路径**（也可显式补 `env.PATH`）：
+>
+> ```jsonc
+> {
+>   "mcpServers": {
+>     "agent-flow-ex": {
+>       "command": "/Users/<you>/.nvm/versions/node/<v>/bin/node",
+>       "args": ["/path/to/agent-flow-ex/dist/server.js"],
+>       "env": { "AGENT_FLOW_HOME": "/Users/<you>/.agent-flow-ex" }
+>     }
+>   }
+> }
+> ```
+
 之后在对话里说「把 X 派给后台 worker」即可；任务终态会推飞书通知（`init` 里配置过 webhook 的话）。
+
+### 可选：安装 dispatch skill（推荐）
+
+MCP 工具是「底层能力」，dispatch skill 是叠加在上面的**派发规范**：什么时候该派、prompt 怎么写才自包含、
+同一目录为什么禁止并发、`needs_input` 怎么续跑、什么时候干脆别派（返工量小且强依赖当前会话上下文时，
+自己更快更准）。装了它，你只说「把 X 派给 worker」，它会按规范把任务拆好、检查并发、拼好 prompt 再提交。
+
+```bash
+./scripts/install-skill.sh          # 默认装到 ~/.agents/skills + ~/.workbuddy/skills
+./scripts/install-skill.sh ~/some/other/skills   # 或指定目录
+```
+
+脚本把仓库里的 `skills/agent-flow-dispatch` **软链**到各宿主工具的用户级 skills 目录——
+它是仓库的软链，改了立刻生效、不会产生副本漂移。可重复执行（幂等：已指向正确位置会 skip；
+若目标路径已有**实体目录**则会中止并提示手动处理，不会覆盖）。
+
+**生效范围是全局的，不是当前仓库**：入口落在用户级 skills 目录（`~/.agents/skills`、`~/.workbuddy/skills`），
+WorkBuddy 会扫描这些路径，所以在任何项目里都能用。仓库里的 `./skills/` 是普通目录，**不是**项目级 skill 路径
+（那会是 `./.workbuddy/skills`），因此既不会只在本仓库生效，也不会与项目级 skill 冲突。
+
+> ⚠️ 默认目标**不含 Trae**：它的前端在后台任务结束时**不会开新 turn**，所以「派发完就等着收通知」在 Trae 上不成立，
+> 只能自己查 `status`。需要时用 `./install-skill.sh ~/.trae-cn/skills` 单独装。
+>
+> ⚠️ 该脚本是**开发者路线**（依赖本地仓库路径），随 npm 包发布不适用——见下方「已知缺口」。
 
 ## 安装（从源码，开发者路线）
 
@@ -67,6 +108,7 @@ git clone https://github.com/wuruofan/agent-flow-ex && cd agent-flow-ex
 npm install
 npm run build        # tsc → 生成 dist/
 npm run init         # 开发模式跑 init（tsx）
+./scripts/install-skill.sh   # 可选：装 dispatch skill
 ```
 
 ## 配置
@@ -318,6 +360,28 @@ node dist/server.js init    # 即 `agent-flow-ex init`
 - 末尾提示可编辑 `config.json` 调整模型别名与通用默认 env（如 `API_TIMEOUT_MS`）。
 
 > 已有 `config.json` 时 `init` 会先确认是否覆盖。opencode executor 不询问 provider——它由 opencode 自己的配置管理（`opencode auth login` / `opencode.json`），agent-flow 只负责拉起。
+
+## 发布（npm）
+
+包名 `agent-flow-ex`，MIT。发布配置已在 `package.json` 就位：
+
+| 字段 | 值 | 说明 |
+|---|---|---|
+| `bin` | `dist/server.js` | 全局安装后 `agent-flow-ex` 可直接跑 server |
+| `files` | `dist` / `config.example.json` / `README.md` | 源码、`tests/`、`docs/` 不进包 |
+| `prepublishOnly` | `build` + `test` | 发布前自动构建并跑全量测试，测试红则发布中止 |
+| `engines.node` | `>=22.5` | 依赖 `node:sqlite`（server 与 runner 都要用） |
+
+```bash
+npm run build && npm test      # prepublishOnly 也会跑，但建议先手动确认
+npm publish --access public
+```
+
+发布者需自备 npm 账号并 `npm login`（包名当前在公共 registry 上未被占用）。
+
+> ⚠️ **npm 包不含 dispatch skill**：`skills/` 与 `scripts/` 不在 `files` 白名单里，且 `install-skill.sh`
+> 依赖本地仓库路径（软链到 `<repo>/skills/…`），对 npm 用户不成立。要给 npm 用户装 skill，
+> 需要另做分发（随包带上 + 改成「复制」而非「软链」，或让 skill 走独立的 skills 市场）。
 
 ## 后续（planned）
 
